@@ -10,6 +10,15 @@ use agoramesh_core::{Clock, Message, MessageId, Verification};
 #[cfg(test)]
 use chrono::{DateTime, Utc};
 
+/// Whether a store insert wrote a new message or found an identical one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InsertResult {
+    /// The message was newly inserted.
+    Inserted,
+    /// An identical message was already present under the same object ID.
+    Duplicate,
+}
+
 /// The public contract implemented by every Agoramesh message store.
 ///
 /// All operations are synchronous in Phase 1; async variants may be added later.
@@ -23,9 +32,9 @@ pub trait Store: fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns an error if the message fails verification or if it is already
-    /// present under the same object ID.
-    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<(), Error>;
+    /// Returns an error if the message fails verification or if a different
+    /// message is already present under the same object ID.
+    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<InsertResult, Error>;
 
     /// Returns the message with the given object ID, if any.
     ///
@@ -83,14 +92,17 @@ impl InMemoryStore {
 }
 
 impl Store for InMemoryStore {
-    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<(), Error> {
-        match message.verify(clock) {
+    fn insert(&mut self, message: Message, _clock: &dyn Clock) -> Result<InsertResult, Error> {
+        match message.verify() {
             Verification::Accepted | Verification::AcceptedWithWarning(_) => {
-                if self.messages.contains_key(&message.id()) {
+                if let Some(existing) = self.messages.get(&message.id()) {
+                    if existing == &message {
+                        return Ok(InsertResult::Duplicate);
+                    }
                     return Err(Error::DuplicateObjectId(message.id()));
                 }
                 self.messages.insert(message.id(), message);
-                Ok(())
+                Ok(InsertResult::Inserted)
             }
             Verification::Rejected(error) => Err(Error::Rejected(error)),
         }
@@ -140,8 +152,8 @@ fn sort_and_verify(messages: &mut Vec<Message>, clock: &dyn Clock) -> Result<Vec
     Ok(messages.clone())
 }
 
-fn verify_loaded(message: &Message, clock: &dyn Clock) -> Result<(), Error> {
-    match message.verify(clock) {
+fn verify_loaded(message: &Message, _clock: &dyn Clock) -> Result<(), Error> {
+    match message.verify() {
         Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
         Verification::Rejected(error) => Err(Error::RejectedOnRead(error)),
     }
@@ -215,8 +227,14 @@ mod tests {
 
     fn valid_message(scope: &str, created_at: DateTime<Utc>) -> Message {
         let keypair = Keypair::generate();
-        Message::create(&keypair, created_at, scope.to_owned(), b"hello mesh")
-            .expect("create message")
+        Message::create(
+            &keypair,
+            "message",
+            created_at,
+            scope.to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message")
     }
 
     fn tamper_body(message: &Message) -> Message {
@@ -298,34 +316,64 @@ mod tests {
     }
 
     #[test]
-    fn future_rejected_message_is_not_stored() {
+    fn future_message_is_stored_and_skew_detected_by_sync() {
         let mut store = InMemoryStore::new();
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let created_at =
             now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1);
-        let message = Message::create(&keypair, created_at, "test".to_owned(), b"hello mesh")
-            .expect("create message");
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
 
         let clock = FixedClock { now };
+        assert_eq!(
+            store.insert(message.clone(), &clock).expect("insert"),
+            InsertResult::Inserted
+        );
         assert!(matches!(
-            store.insert(message, &clock),
-            Err(Error::Rejected(MessageError::ClockSkewTooLarge { .. }))
+            message.classify_clock_skew(&clock),
+            Verification::Rejected(MessageError::ClockSkewTooLarge { .. })
         ));
-        assert_eq!(store.list_by_created_at(&clock).expect("list").len(), 0);
+        assert_eq!(store.list_by_created_at(&clock).expect("list").len(), 1);
     }
 
     #[test]
-    fn duplicate_object_id_is_rejected() {
+    fn duplicate_object_id_returns_duplicate_result() {
         let mut store = InMemoryStore::new();
         let message = valid_message("test", utc(1_700_000_000));
         let clock = FixedClock {
             now: utc(1_700_000_000),
         };
-        store.insert(message.clone(), &clock).expect("first insert");
+        assert_eq!(
+            store.insert(message.clone(), &clock).expect("first insert"),
+            InsertResult::Inserted
+        );
+        assert_eq!(
+            store.insert(message, &clock).expect("second insert"),
+            InsertResult::Duplicate
+        );
+    }
+
+    #[test]
+    fn conflicting_object_id_is_rejected() {
+        let mut store = InMemoryStore::new();
+        let first = valid_message("test", utc(1_700_000_000));
+        let second = tamper_body(&first);
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(first, &clock).expect("first insert");
         assert!(matches!(
-            store.insert(message, &clock),
-            Err(Error::DuplicateObjectId(_))
+            store.insert(second, &clock),
+            Err(Error::Rejected(
+                MessageError::ObjectIdMismatch | MessageError::InvalidSignature { .. }
+            ))
         ));
     }
 
@@ -460,11 +508,14 @@ mod tests {
             .expect("present");
         let bytes = serde_json::to_vec(&stored).expect("serialize");
         let restored: Message = serde_json::from_slice(&bytes).expect("deserialize");
-        assert_eq!(restored.verify(&clock), Verification::Accepted);
+        assert_eq!(restored.verify(), Verification::Accepted);
 
-        store
-            .insert(restored, &clock)
-            .expect_err("duplicate after roundtrip");
+        assert_eq!(
+            store
+                .insert(restored, &clock)
+                .expect("duplicate after roundtrip"),
+            InsertResult::Duplicate
+        );
     }
 
     fn message_clock(message: &Message) -> FixedClock {

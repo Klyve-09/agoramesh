@@ -10,7 +10,7 @@ use agoramesh_core::{Clock, Message, MessageId, Verification};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection as SqliteConnection, OpenFlags, OptionalExtension};
 
-use crate::store::{Error as StoreError, Store};
+use crate::store::{Error as StoreError, InsertResult, Store};
 
 /// A handle to the underlying `SQLite` connection.
 #[derive(Debug)]
@@ -141,8 +141,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn verify_on_read(message: &Message, clock: &dyn Clock) -> Result<(), StoreError> {
-        match message.verify(clock) {
+    fn verify_on_read(message: &Message, _clock: &dyn Clock) -> Result<(), StoreError> {
+        match message.verify() {
             Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
             Verification::Rejected(error) => Err(StoreError::RejectedOnRead(error)),
         }
@@ -175,13 +175,21 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
-    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<(), StoreError> {
-        match message.verify(clock) {
+    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<InsertResult, StoreError> {
+        match message.verify() {
             Verification::Accepted | Verification::AcceptedWithWarning(_) => {
+                let message_id = message.id();
+                if let Some(existing) = self.get(message_id, clock)? {
+                    return if existing == message {
+                        Ok(InsertResult::Duplicate)
+                    } else {
+                        Err(StoreError::DuplicateObjectId(message_id))
+                    };
+                }
+
                 let json = serde_json::to_vec(&message)
                     .map_err(|error| StoreError::Serialization(error.to_string()))?;
                 let signed = message.signed_payload();
-                let message_id = message.id();
                 let id_bytes = message_id.as_bytes();
                 let id = id_bytes.as_slice();
                 let created_at = signed.created_at().datetime().to_rfc3339();
@@ -194,12 +202,12 @@ impl Store for SqliteStore {
                     )
                     .map_err(|error| {
                         if is_unique_violation(&error) {
-                            StoreError::DuplicateObjectId(message.id())
+                            StoreError::DuplicateObjectId(message_id)
                         } else {
                             StoreError::Backend(error.to_string())
                         }
                     })?;
-                Ok(())
+                Ok(InsertResult::Inserted)
             }
             Verification::Rejected(error) => Err(StoreError::Rejected(error)),
         }
@@ -308,8 +316,14 @@ mod tests {
 
     fn valid_message(scope: &str, created_at: DateTime<Utc>) -> Message {
         let keypair = Keypair::generate();
-        Message::create(&keypair, created_at, scope.to_owned(), b"hello mesh")
-            .expect("create message")
+        Message::create(
+            &keypair,
+            "message",
+            created_at,
+            scope.to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message")
     }
 
     #[test]
@@ -394,18 +408,21 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_store_rejects_duplicate_object_id() {
+    fn sqlite_store_duplicate_object_id_is_idempotent() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
         let message = valid_message("test", utc(1_700_000_000));
         let clock = FixedClock {
             now: utc(1_700_000_000),
         };
-        store.insert(message.clone(), &clock).expect("first insert");
-        assert!(matches!(
-            store.insert(message, &clock),
-            Err(StoreError::DuplicateObjectId(_))
-        ));
+        assert_eq!(
+            store.insert(message.clone(), &clock).expect("first insert"),
+            InsertResult::Inserted
+        );
+        assert_eq!(
+            store.insert(message, &clock).expect("second insert"),
+            InsertResult::Duplicate
+        );
     }
 
     #[test]
@@ -543,20 +560,26 @@ mod tests {
         let now = utc(1_700_000_000);
         let created_at =
             now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1);
-        let message = Message::create(&keypair, created_at, "test".to_owned(), b"hello mesh")
-            .expect("create message");
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
 
         let write_clock = FixedClock { now };
-        assert!(matches!(
-            store.insert(message, &write_clock),
-            Err(StoreError::Rejected(MessageError::ClockSkewTooLarge { .. }))
-        ));
+        assert_eq!(
+            store.insert(message, &write_clock).expect("insert"),
+            InsertResult::Inserted
+        );
         assert_eq!(
             store
                 .list_by_created_at(&FixedClock { now })
                 .expect("list")
                 .len(),
-            0
+            1
         );
     }
 
