@@ -6,4 +6,4 @@ pub mod db;
 pub mod store;
 
 pub use db::{Connection, SqliteStore};
-pub use store::{Error, InMemoryStore, Store};
+pub use store::{Error, InMemoryStore, InsertResult, Store};

@@ -1,5 +1,7 @@
 //! Identity primitives: stable identifiers backed by Ed25519 keypairs.
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -58,6 +60,55 @@ impl Keypair {
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }
+
+    /// Exports this keypair's 32-byte Ed25519 secret seed.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
+    /// Restores a keypair from a 32-byte Ed25519 secret seed.
+    ///
+    /// # Errors
+    /// Reserved for future seed validation failures.
+    pub fn from_bytes(seed: &[u8; 32]) -> Result<Self, Error> {
+        Ok(Self {
+            signing_key: SigningKey::from_bytes(seed),
+        })
+    }
+
+    /// Exports this keypair's secret seed as base64url without padding.
+    #[must_use]
+    pub fn to_base64(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.to_bytes())
+    }
+
+    /// Restores a keypair from a base64url-encoded 32-byte secret seed.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidSeedEncoding`] when the seed is not base64url and
+    /// [`Error::InvalidSeedLength`] when the decoded seed is not 32 bytes.
+    pub fn from_base64(encoded: &str) -> Result<Self, Error> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|error| Error::InvalidSeedEncoding(error.to_string()))?;
+        let seed: [u8; 32] = decoded
+            .try_into()
+            .map_err(|bytes: Vec<u8>| Error::InvalidSeedLength(bytes.len()))?;
+        Self::from_bytes(&seed)
+    }
+}
+
+/// Errors that can occur while importing key material.
+#[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
+pub enum Error {
+    /// The base64url seed could not be decoded.
+    #[error("invalid seed encoding: {0}")]
+    InvalidSeedEncoding(String),
+
+    /// The decoded seed was not 32 bytes.
+    #[error("invalid seed length: expected 32 bytes, got {0}")]
+    InvalidSeedLength(usize),
 }
 
 fn hash_key(key: &VerifyingKey) -> [u8; 32] {
@@ -90,5 +141,19 @@ mod tests {
         let serialized = serde_json::to_vec(&original).expect("serialize identity");
         let restored: Identity = serde_json::from_slice(&serialized).expect("deserialize identity");
         assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn keypair_roundtrips_through_seed_bytes() {
+        let original = Keypair::generate();
+        let restored = Keypair::from_bytes(&original.to_bytes()).expect("restore keypair");
+        assert_eq!(original.identity(), restored.identity());
+    }
+
+    #[test]
+    fn keypair_roundtrips_through_base64_seed() {
+        let original = Keypair::generate();
+        let restored = Keypair::from_base64(&original.to_base64()).expect("restore keypair");
+        assert_eq!(original.identity(), restored.identity());
     }
 }

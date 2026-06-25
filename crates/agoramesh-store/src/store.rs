@@ -10,6 +10,15 @@ use agoramesh_core::{Clock, Message, MessageId, Verification};
 #[cfg(test)]
 use chrono::{DateTime, Utc};
 
+/// Whether a store insert wrote a new message or found an identical one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InsertResult {
+    /// The message was newly inserted.
+    Inserted,
+    /// An identical message was already present under the same object ID.
+    Duplicate,
+}
+
 /// The public contract implemented by every Agoramesh message store.
 ///
 /// All operations are synchronous in Phase 1; async variants may be added later.
@@ -23,9 +32,9 @@ pub trait Store: fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns an error if the message fails verification or if it is already
-    /// present under the same object ID.
-    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<(), Error>;
+    /// Returns an error if the message fails verification or if a different
+    /// message is already present under the same object ID.
+    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<InsertResult, Error>;
 
     /// Returns the message with the given object ID, if any.
     ///
@@ -83,27 +92,30 @@ impl InMemoryStore {
 }
 
 impl Store for InMemoryStore {
-    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<(), Error> {
-        match message.verify(clock) {
-            Verification::Accepted | Verification::AcceptedWithWarning(_) => {
-                if self.messages.contains_key(&message.id()) {
+    fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<InsertResult, Error> {
+        match verify_for_accept(&message, clock) {
+            Ok(()) => {
+                if let Some(existing) = self.messages.get(&message.id()) {
+                    if existing == &message {
+                        return Ok(InsertResult::Duplicate);
+                    }
                     return Err(Error::DuplicateObjectId(message.id()));
                 }
                 self.messages.insert(message.id(), message);
-                Ok(())
+                Ok(InsertResult::Inserted)
             }
-            Verification::Rejected(error) => Err(Error::Rejected(error)),
+            Err(error) => Err(error),
         }
     }
 
     fn get(&self, id: MessageId, clock: &dyn Clock) -> Result<Option<Message>, Error> {
-        match self.messages.get(&id) {
-            Some(message) => {
-                verify_loaded(message, clock)?;
-                Ok(Some(message.clone()))
-            }
-            None => Ok(None),
-        }
+        self.messages
+            .get(&id)
+            .map_or(Ok(None), |message| match classify_on_read(message, clock) {
+                ReadDisposition::Keep => Ok(Some(message.clone())),
+                ReadDisposition::Skip => Ok(None),
+                ReadDisposition::Reject(error) => Err(error),
+            })
     }
 
     fn list_by_scope(&self, scope: &str, clock: &dyn Clock) -> Result<Vec<Message>, Error> {
@@ -132,19 +144,64 @@ impl Store for InMemoryStore {
     }
 }
 
-fn sort_and_verify(messages: &mut Vec<Message>, clock: &dyn Clock) -> Result<Vec<Message>, Error> {
-    sort_by_created_at(messages);
-    for message in &mut *messages {
-        verify_loaded(message, clock)?;
+/// Verifies a message before it enters the accepted store.
+///
+/// ADR 0008: signature/object-id/author checks must pass, and the message must
+/// not exceed the far-future clock-skew threshold. Near-future warnings are
+/// accepted.
+fn verify_for_accept(message: &Message, clock: &dyn Clock) -> Result<(), Error> {
+    match message.verify() {
+        Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
+        Verification::Rejected(error) => return Err(Error::Rejected(error)),
     }
-    Ok(messages.clone())
+
+    match message.classify_clock_skew(clock) {
+        Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
+        Verification::Rejected(error) => Err(Error::Rejected(error)),
+    }
 }
 
-fn verify_loaded(message: &Message, clock: &dyn Clock) -> Result<(), Error> {
-    match message.verify(clock) {
-        Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
-        Verification::Rejected(error) => Err(Error::RejectedOnRead(error)),
+enum ReadDisposition {
+    Keep,
+    Skip,
+    Reject(Error),
+}
+
+impl ReadDisposition {
+    fn from_verification(verification: Verification) -> Self {
+        match verification {
+            Verification::Accepted | Verification::AcceptedWithWarning(_) => Self::Keep,
+            Verification::Rejected(error) => match error {
+                agoramesh_core::message::Error::ClockSkewTooLarge { .. } => Self::Skip,
+                other => Self::Reject(Error::RejectedOnRead(other)),
+            },
+        }
     }
+}
+
+fn classify_on_read(message: &Message, clock: &dyn Clock) -> ReadDisposition {
+    let integrity = message.verify();
+    if !matches!(
+        integrity,
+        Verification::Accepted | Verification::AcceptedWithWarning(_)
+    ) {
+        return ReadDisposition::from_verification(integrity);
+    }
+
+    ReadDisposition::from_verification(message.classify_clock_skew(clock))
+}
+
+fn sort_and_verify(messages: &mut Vec<Message>, clock: &dyn Clock) -> Result<Vec<Message>, Error> {
+    sort_by_created_at(messages);
+    let mut result = Vec::with_capacity(messages.len());
+    for message in messages.drain(..) {
+        match classify_on_read(&message, clock) {
+            ReadDisposition::Keep => result.push(message),
+            ReadDisposition::Skip => {}
+            ReadDisposition::Reject(error) => return Err(error),
+        }
+    }
+    Ok(result)
 }
 
 fn sort_by_created_at(messages: &mut [Message]) {
@@ -215,8 +272,14 @@ mod tests {
 
     fn valid_message(scope: &str, created_at: DateTime<Utc>) -> Message {
         let keypair = Keypair::generate();
-        Message::create(&keypair, created_at, scope.to_owned(), b"hello mesh")
-            .expect("create message")
+        Message::create(
+            &keypair,
+            "message",
+            created_at,
+            scope.to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message")
     }
 
     fn tamper_body(message: &Message) -> Message {
@@ -298,34 +361,136 @@ mod tests {
     }
 
     #[test]
-    fn future_rejected_message_is_not_stored() {
+    fn far_future_message_is_rejected_on_insert() {
         let mut store = InMemoryStore::new();
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let created_at =
             now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1);
-        let message = Message::create(&keypair, created_at, "test".to_owned(), b"hello mesh")
-            .expect("create message");
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
 
         let clock = FixedClock { now };
         assert!(matches!(
             store.insert(message, &clock),
             Err(Error::Rejected(MessageError::ClockSkewTooLarge { .. }))
         ));
-        assert_eq!(store.list_by_created_at(&clock).expect("list").len(), 0);
     }
 
     #[test]
-    fn duplicate_object_id_is_rejected() {
+    fn near_future_message_is_accepted_with_warning() {
+        let mut store = InMemoryStore::new();
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let created_at =
+            now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS - 1);
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
+
+        let clock = FixedClock { now };
+        assert_eq!(
+            store.insert(message.clone(), &clock).expect("insert"),
+            InsertResult::Inserted
+        );
+        assert!(matches!(
+            message.classify_clock_skew(&clock),
+            Verification::AcceptedWithWarning(agoramesh_core::SkewWarning::Future)
+        ));
+    }
+
+    #[test]
+    fn far_future_message_is_omitted_on_read() {
+        let mut store = InMemoryStore::new();
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let created_at =
+            now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS - 1);
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
+
+        let write_clock = FixedClock { now };
+        store
+            .insert(message.clone(), &write_clock)
+            .expect("insert near future");
+
+        let later_clock = FixedClock {
+            now: created_at
+                - TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1),
+        };
+        assert!(matches!(
+            message.classify_clock_skew(&later_clock),
+            Verification::Rejected(MessageError::ClockSkewTooLarge { .. })
+        ));
+        assert_eq!(store.get(message.id(), &later_clock).expect("get"), None);
+        assert!(
+            store
+                .list_by_created_at(&later_clock)
+                .expect("list")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_by_scope("test", &later_clock)
+                .expect("list scope")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_by_type("message", &later_clock)
+                .expect("list type")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn duplicate_object_id_returns_duplicate_result() {
         let mut store = InMemoryStore::new();
         let message = valid_message("test", utc(1_700_000_000));
         let clock = FixedClock {
             now: utc(1_700_000_000),
         };
-        store.insert(message.clone(), &clock).expect("first insert");
+        assert_eq!(
+            store.insert(message.clone(), &clock).expect("first insert"),
+            InsertResult::Inserted
+        );
+        assert_eq!(
+            store.insert(message, &clock).expect("second insert"),
+            InsertResult::Duplicate
+        );
+    }
+
+    #[test]
+    fn conflicting_object_id_is_rejected() {
+        let mut store = InMemoryStore::new();
+        let first = valid_message("test", utc(1_700_000_000));
+        let second = tamper_body(&first);
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(first, &clock).expect("first insert");
         assert!(matches!(
-            store.insert(message, &clock),
-            Err(Error::DuplicateObjectId(_))
+            store.insert(second, &clock),
+            Err(Error::Rejected(
+                MessageError::ObjectIdMismatch | MessageError::InvalidSignature { .. }
+            ))
         ));
     }
 
@@ -460,11 +625,14 @@ mod tests {
             .expect("present");
         let bytes = serde_json::to_vec(&stored).expect("serialize");
         let restored: Message = serde_json::from_slice(&bytes).expect("deserialize");
-        assert_eq!(restored.verify(&clock), Verification::Accepted);
+        assert_eq!(restored.verify(), Verification::Accepted);
 
-        store
-            .insert(restored, &clock)
-            .expect_err("duplicate after roundtrip");
+        assert_eq!(
+            store
+                .insert(restored, &clock)
+                .expect("duplicate after roundtrip"),
+            InsertResult::Duplicate
+        );
     }
 
     fn message_clock(message: &Message) -> FixedClock {
