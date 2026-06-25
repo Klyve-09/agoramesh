@@ -5,6 +5,7 @@
 pub mod canonical;
 pub mod identity;
 pub mod message;
+pub mod objects;
 
 pub use identity::{Identity, Keypair};
 pub use message::{Clock, Message, MessageId, SkewWarning, SystemClock, Verification};
