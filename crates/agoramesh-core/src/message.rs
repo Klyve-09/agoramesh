@@ -325,17 +325,6 @@ impl Message {
         self.id
     }
 
-    /// Replaces the message identifier.
-    ///
-    /// # Safety
-    ///
-    /// This breaks the object ID invariant and should only be used in tests
-    /// that intentionally construct malformed messages.
-    #[cfg(test)]
-    pub const fn set_id(&mut self, id: MessageId) {
-        self.id = id;
-    }
-
     /// Returns the author identity.
     #[must_use]
     pub const fn author_id(&self) -> &crate::Identity {
@@ -364,28 +353,6 @@ impl Message {
     #[must_use]
     pub fn body(&self) -> &[u8] {
         self.signed_payload.body.as_bytes()
-    }
-
-    /// Replaces the body in the signed payload.
-    ///
-    /// # Safety
-    ///
-    /// This breaks the signature/object ID invariant and should only be used
-    /// in tests that intentionally construct malformed messages.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub fn set_body(&mut self, body: Body) {
-        self.signed_payload.body = body;
-    }
-
-    /// Replaces the creation timestamp in the signed payload.
-    ///
-    /// # Safety
-    ///
-    /// This breaks the signature/object ID invariant and should only be used
-    /// in tests that intentionally construct malformed messages.
-    #[cfg(any(test, feature = "test-helpers"))]
-    pub const fn set_created_at(&mut self, created_at: Timestamp) {
-        self.signed_payload.created_at = created_at;
     }
 }
 

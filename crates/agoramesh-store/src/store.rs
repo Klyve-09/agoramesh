@@ -181,6 +181,13 @@ pub enum Error {
     /// The underlying storage backend returned an error.
     #[error("storage backend error: {0}")]
     Backend(String),
+
+    /// A stored message's indexed metadata does not match its JSON payload.
+    #[error("stored message metadata mismatch: {field}")]
+    CorruptStoredMessage {
+        /// The metadata field that diverged from the JSON payload.
+        field: String,
+    },
 }
 
 #[cfg(test)]
@@ -232,9 +239,13 @@ mod tests {
     }
 
     fn corrupt_body(message: &Message) -> Message {
-        let mut corrupted = message.clone();
-        corrupted.set_body(agoramesh_core::Body::from(b"corrupt".as_slice()));
-        corrupted
+        let mut value: Value = serde_json::to_value(message).expect("serialize");
+        let body = value
+            .get_mut("signed_payload")
+            .and_then(|payload| payload.get_mut("body"))
+            .expect("body field");
+        *body = Value::String("Y29ycnVwdA".to_owned());
+        serde_json::from_value(value).expect("deserialize tampered")
     }
 
     #[test]

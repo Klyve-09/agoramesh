@@ -7,7 +7,4 @@ pub mod identity;
 pub mod message;
 
 pub use identity::{Identity, Keypair};
-pub use message::{
-    Body, Clock, Message, MessageId, SignedPayload, SkewWarning, SystemClock, Timestamp,
-    TransportMetadata, Verification,
-};
+pub use message::{Clock, Message, MessageId, SkewWarning, SystemClock, Verification};

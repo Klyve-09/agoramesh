@@ -66,6 +66,15 @@ pub struct SqliteStore {
     connection: Connection,
 }
 
+#[derive(Debug)]
+struct StoredRow {
+    id: Vec<u8>,
+    kind: String,
+    scope: String,
+    created_at: String,
+    message: Message,
+}
+
 impl SqliteStore {
     /// Creates a new SQLite-backed store from an open connection.
     #[must_use]
@@ -79,7 +88,11 @@ impl SqliteStore {
         &self.connection
     }
 
-    fn message_from_row(row: &rusqlite::Row<'_>) -> Result<Message, rusqlite::Error> {
+    fn row_from_row(row: &rusqlite::Row<'_>) -> Result<StoredRow, rusqlite::Error> {
+        let id: Vec<u8> = row.get("id")?;
+        let kind: String = row.get("kind")?;
+        let scope: String = row.get("scope")?;
+        let created_at: String = row.get("created_at")?;
         let json: Vec<u8> = row.get("json")?;
         let message: Message = serde_json::from_slice(&json).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -88,7 +101,44 @@ impl SqliteStore {
                 Box::new(error),
             )
         })?;
-        Ok(message)
+        Ok(StoredRow {
+            id,
+            kind,
+            scope,
+            created_at,
+            message,
+        })
+    }
+
+    fn verify_row(row: &StoredRow) -> Result<(), StoreError> {
+        if row.id.as_slice() != row.message.id().as_bytes().as_slice() {
+            return Err(StoreError::CorruptStoredMessage {
+                field: "id".to_owned(),
+            });
+        }
+        if row.kind != row.message.signed_payload().kind() {
+            return Err(StoreError::CorruptStoredMessage {
+                field: "kind".to_owned(),
+            });
+        }
+        if row.scope != row.message.signed_payload().scope() {
+            return Err(StoreError::CorruptStoredMessage {
+                field: "scope".to_owned(),
+            });
+        }
+        if row.created_at
+            != row
+                .message
+                .signed_payload()
+                .created_at()
+                .datetime()
+                .to_rfc3339()
+        {
+            return Err(StoreError::CorruptStoredMessage {
+                field: "created_at".to_owned(),
+            });
+        }
+        Ok(())
     }
 
     fn verify_on_read(message: &Message, clock: &dyn Clock) -> Result<(), StoreError> {
@@ -110,13 +160,14 @@ impl SqliteStore {
             .prepare(sql)
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         let rows = statement
-            .query_map(params, Self::message_from_row)
+            .query_map(params, Self::row_from_row)
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         let mut messages = Vec::new();
         for row in rows {
-            let message = row.map_err(|error| StoreError::Backend(error.to_string()))?;
-            Self::verify_on_read(&message, clock)?;
-            messages.push(message);
+            let row = row.map_err(|error| StoreError::Backend(error.to_string()))?;
+            Self::verify_row(&row)?;
+            Self::verify_on_read(&row.message, clock)?;
+            messages.push(row.message);
         }
         sort_by_created_at(&mut messages);
         Ok(messages)
@@ -157,19 +208,20 @@ impl Store for SqliteStore {
     fn get(&self, id: MessageId, clock: &dyn Clock) -> Result<Option<Message>, StoreError> {
         let id_bytes = id.as_bytes();
         let id_slice = id_bytes.as_slice();
-        let maybe_message = self
+        let maybe_row = self
             .connection
             .inner
             .query_row(
-                "SELECT json FROM messages WHERE id = ?1",
+                "SELECT id, kind, scope, created_at, json FROM messages WHERE id = ?1",
                 [id_slice],
-                Self::message_from_row,
+                Self::row_from_row,
             )
             .optional()
             .map_err(|error| StoreError::Backend(error.to_string()))?;
-        if let Some(message) = maybe_message {
-            Self::verify_on_read(&message, clock)?;
-            Ok(Some(message))
+        if let Some(row) = maybe_row {
+            Self::verify_row(&row)?;
+            Self::verify_on_read(&row.message, clock)?;
+            Ok(Some(row.message))
         } else {
             Ok(None)
         }
@@ -177,7 +229,7 @@ impl Store for SqliteStore {
 
     fn list_by_scope(&self, scope: &str, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
         self.list(
-            "SELECT json FROM messages WHERE scope = ?1 ORDER BY created_at ASC, id ASC",
+            "SELECT id, kind, scope, created_at, json FROM messages WHERE scope = ?1 ORDER BY created_at ASC, id ASC",
             [scope],
             clock,
         )
@@ -185,7 +237,7 @@ impl Store for SqliteStore {
 
     fn list_by_type(&self, kind: &str, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
         self.list(
-            "SELECT json FROM messages WHERE kind = ?1 ORDER BY created_at ASC, id ASC",
+            "SELECT id, kind, scope, created_at, json FROM messages WHERE kind = ?1 ORDER BY created_at ASC, id ASC",
             [kind],
             clock,
         )
@@ -193,7 +245,7 @@ impl Store for SqliteStore {
 
     fn list_by_created_at(&self, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
         self.list(
-            "SELECT json FROM messages ORDER BY created_at ASC, id ASC",
+            "SELECT id, kind, scope, created_at, json FROM messages ORDER BY created_at ASC, id ASC",
             [],
             clock,
         )
@@ -506,5 +558,126 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    #[test]
+    fn sqlite_store_get_rejects_mismatched_row_id() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        let other_id = [0u8; 32];
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET id = ?1 WHERE id = ?2",
+                rusqlite::params![other_id.as_slice(), message.id().as_bytes().as_slice()],
+            )
+            .expect("tamper id");
+
+        let result = store.get(MessageId::from(other_id), &clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::CorruptStoredMessage { field })
+            if field == "id"
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_list_by_scope_rejects_mismatched_row_scope() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("alpha", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET scope = 'beta' WHERE id = ?1",
+                [message.id().as_bytes().as_slice()],
+            )
+            .expect("tamper scope");
+
+        assert!(
+            store
+                .list_by_scope("alpha", &clock)
+                .expect("list alpha")
+                .is_empty()
+        );
+        let result = store.list_by_scope("beta", &clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::CorruptStoredMessage { field })
+            if field == "scope"
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_list_by_type_rejects_mismatched_row_kind() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET kind = 'other' WHERE id = ?1",
+                [message.id().as_bytes().as_slice()],
+            )
+            .expect("tamper kind");
+
+        assert!(
+            store
+                .list_by_type("message", &clock)
+                .expect("list message")
+                .is_empty()
+        );
+        let result = store.list_by_type("other", &clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::CorruptStoredMessage { field })
+            if field == "kind"
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_list_by_created_at_rejects_mismatched_row_created_at() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                [message.id().as_bytes().as_slice()],
+            )
+            .expect("tamper created_at");
+
+        let result = store.list_by_created_at(&clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::CorruptStoredMessage { field })
+            if field == "created_at"
+        ));
     }
 }
