@@ -3,5 +3,7 @@
 //! Persistent storage for Agoramesh messages and peer metadata.
 
 pub mod db;
+pub mod store;
 
-pub use db::{Connection, Store};
+pub use db::Connection;
+pub use store::{Error, InMemoryStore, Store};
