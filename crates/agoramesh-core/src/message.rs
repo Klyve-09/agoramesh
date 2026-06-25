@@ -148,6 +148,12 @@ impl SignedPayload {
         &self.scope
     }
 
+    /// Returns the author Ed25519 public key bytes.
+    #[must_use]
+    pub const fn author_pubkey(&self) -> &[u8; 32] {
+        &self.author_pubkey
+    }
+
     /// Returns the creation timestamp.
     #[must_use]
     pub const fn created_at(&self) -> &Timestamp {

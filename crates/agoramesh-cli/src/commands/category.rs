@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use agoramesh_core::SystemClock;
-use agoramesh_core::objects::category;
+use agoramesh_core::objects::{category, validation};
 use agoramesh_store::Store;
 use chrono::{DateTime, SecondsFormat, Utc};
 use clap::{Args, Subcommand};
@@ -69,6 +69,7 @@ fn create(
     let object_id = message.id().to_hex();
     let category_id = message.signed_payload().scope().to_owned();
     let clock = SystemClock;
+    ensure_acceptable(&message, clock)?;
     let mut store = helpers::open_store(config)?;
     let _ = store.insert(message, &clock)?;
 
@@ -97,6 +98,15 @@ pub(crate) fn format_timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+fn ensure_acceptable(message: &agoramesh_core::Message, clock: SystemClock) -> Result<(), Error> {
+    match message.classify_clock_skew(&clock) {
+        agoramesh_core::Verification::Accepted
+        | agoramesh_core::Verification::AcceptedWithWarning(_) => {}
+        agoramesh_core::Verification::Rejected(error) => return Err(Error::Message(error)),
+    }
+    validation::validate_phase1_message(message).map_err(Error::Validation)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -109,4 +119,6 @@ pub enum Error {
     CreatedAt(#[from] chrono::ParseError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("object validation failed: {0}")]
+    Validation(#[from] validation::Error),
 }

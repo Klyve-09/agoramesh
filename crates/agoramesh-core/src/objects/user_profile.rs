@@ -8,6 +8,7 @@ use crate::objects::{canonical_body, pubkey_hex};
 
 /// Signed body for a user profile object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     /// Display name shown to users.
     pub display_name: String,

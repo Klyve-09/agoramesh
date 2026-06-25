@@ -8,6 +8,7 @@ use crate::objects::{canonical_body, pubkey_hex};
 
 /// Signed body for a revocation certificate object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     /// Revoked Ed25519 public key encoded as lowercase hex.
     pub revoked_pubkey: String,
@@ -30,19 +31,21 @@ pub enum ValidationError {
     InvalidBody(String),
 }
 
-/// Creates a signed revocation certificate object.
+/// Creates a signed self-revocation certificate object.
+///
+/// Phase 1 only supports an identity revoking its own key. The revoked public key
+/// is derived from `keypair`.
 ///
 /// # Errors
 ///
 /// Returns an error if the body or signing payload cannot be canonicalized.
 pub fn create(
     keypair: &crate::Keypair,
-    revoked_pubkey: [u8; 32],
     replacement_pubkey: Option<[u8; 32]>,
     effective_at: DateTime<Utc>,
     reason_code: impl Into<String>,
 ) -> Result<Message, message::Error> {
-    let revoked_pubkey = pubkey_hex(&revoked_pubkey);
+    let revoked_pubkey = pubkey_hex(keypair.identity().verifying_key().as_bytes());
     let body = Body {
         replacement_pubkey: replacement_pubkey.map(|pubkey| pubkey_hex(&pubkey)),
         effective_at,

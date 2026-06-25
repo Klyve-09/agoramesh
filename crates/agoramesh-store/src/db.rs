@@ -141,10 +141,45 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn verify_on_read(message: &Message, _clock: &dyn Clock) -> Result<(), StoreError> {
+    fn verify_for_accept(message: &Message, clock: &dyn Clock) -> Result<(), StoreError> {
         match message.verify() {
+            Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
+            Verification::Rejected(error) => return Err(StoreError::Rejected(error)),
+        }
+
+        match message.classify_clock_skew(clock) {
             Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
-            Verification::Rejected(error) => Err(StoreError::RejectedOnRead(error)),
+            Verification::Rejected(error) => Err(StoreError::Rejected(error)),
+        }
+    }
+
+    fn verify_on_read(message: &Message, clock: &dyn Clock) -> Result<Option<()>, StoreError> {
+        match message.verify() {
+            Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
+            Verification::Rejected(error) => {
+                return if matches!(
+                    error,
+                    agoramesh_core::message::Error::ClockSkewTooLarge { .. }
+                ) {
+                    Ok(None)
+                } else {
+                    Err(StoreError::RejectedOnRead(error))
+                };
+            }
+        }
+
+        match message.classify_clock_skew(clock) {
+            Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(Some(())),
+            Verification::Rejected(error) => {
+                if matches!(
+                    error,
+                    agoramesh_core::message::Error::ClockSkewTooLarge { .. }
+                ) {
+                    Ok(None)
+                } else {
+                    Err(StoreError::RejectedOnRead(error))
+                }
+            }
         }
     }
 
@@ -166,8 +201,9 @@ impl SqliteStore {
         for row in rows {
             let row = row.map_err(|error| StoreError::Backend(error.to_string()))?;
             Self::verify_row(&row)?;
-            Self::verify_on_read(&row.message, clock)?;
-            messages.push(row.message);
+            if Self::verify_on_read(&row.message, clock)?.is_some() {
+                messages.push(row.message);
+            }
         }
         sort_by_created_at(&mut messages);
         Ok(messages)
@@ -176,41 +212,38 @@ impl SqliteStore {
 
 impl Store for SqliteStore {
     fn insert(&mut self, message: Message, clock: &dyn Clock) -> Result<InsertResult, StoreError> {
-        match message.verify() {
-            Verification::Accepted | Verification::AcceptedWithWarning(_) => {
-                let message_id = message.id();
-                if let Some(existing) = self.get(message_id, clock)? {
-                    return if existing == message {
-                        Ok(InsertResult::Duplicate)
-                    } else {
-                        Err(StoreError::DuplicateObjectId(message_id))
-                    };
-                }
+        Self::verify_for_accept(&message, clock)?;
 
-                let json = serde_json::to_vec(&message)
-                    .map_err(|error| StoreError::Serialization(error.to_string()))?;
-                let signed = message.signed_payload();
-                let id_bytes = message_id.as_bytes();
-                let id = id_bytes.as_slice();
-                let created_at = signed.created_at().datetime().to_rfc3339();
-                self.connection
-                    .inner
-                    .execute(
-                        "INSERT INTO messages (id, kind, scope, created_at, json)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![id, signed.kind(), signed.scope(), created_at, json],
-                    )
-                    .map_err(|error| {
-                        if is_unique_violation(&error) {
-                            StoreError::DuplicateObjectId(message_id)
-                        } else {
-                            StoreError::Backend(error.to_string())
-                        }
-                    })?;
-                Ok(InsertResult::Inserted)
-            }
-            Verification::Rejected(error) => Err(StoreError::Rejected(error)),
+        let message_id = message.id();
+        if let Some(existing) = self.get(message_id, clock)? {
+            return if existing == message {
+                Ok(InsertResult::Duplicate)
+            } else {
+                Err(StoreError::DuplicateObjectId(message_id))
+            };
         }
+
+        let json = serde_json::to_vec(&message)
+            .map_err(|error| StoreError::Serialization(error.to_string()))?;
+        let signed = message.signed_payload();
+        let id_bytes = message_id.as_bytes();
+        let id = id_bytes.as_slice();
+        let created_at = signed.created_at().datetime().to_rfc3339();
+        self.connection
+            .inner
+            .execute(
+                "INSERT INTO messages (id, kind, scope, created_at, json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, signed.kind(), signed.scope(), created_at, json],
+            )
+            .map_err(|error| {
+                if is_unique_violation(&error) {
+                    StoreError::DuplicateObjectId(message_id)
+                } else {
+                    StoreError::Backend(error.to_string())
+                }
+            })?;
+        Ok(InsertResult::Inserted)
     }
 
     fn get(&self, id: MessageId, clock: &dyn Clock) -> Result<Option<Message>, StoreError> {
@@ -228,8 +261,11 @@ impl Store for SqliteStore {
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         if let Some(row) = maybe_row {
             Self::verify_row(&row)?;
-            Self::verify_on_read(&row.message, clock)?;
-            Ok(Some(row.message))
+            if Self::verify_on_read(&row.message, clock)?.is_some() {
+                Ok(Some(row.message))
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }
@@ -553,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_store_lists_future_message() {
+    fn sqlite_store_rejects_far_future_message() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
         let keypair = Keypair::generate();
@@ -570,16 +606,56 @@ mod tests {
         .expect("create message");
 
         let write_clock = FixedClock { now };
-        assert_eq!(
-            store.insert(message, &write_clock).expect("insert"),
-            InsertResult::Inserted
-        );
-        assert_eq!(
+        assert!(matches!(
+            store.insert(message, &write_clock),
+            Err(StoreError::Rejected(MessageError::ClockSkewTooLarge { .. }))
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_omits_far_future_message_on_read() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let created_at =
+            now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS - 1);
+        let message = Message::create(
+            &keypair,
+            "message",
+            created_at,
+            "test".to_owned(),
+            b"hello mesh",
+        )
+        .expect("create message");
+
+        let write_clock = FixedClock { now };
+        store
+            .insert(message.clone(), &write_clock)
+            .expect("insert near future");
+
+        let later_clock = FixedClock {
+            now: created_at
+                - TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1),
+        };
+        assert_eq!(store.get(message.id(), &later_clock).expect("get"), None);
+        assert!(
             store
-                .list_by_created_at(&FixedClock { now })
+                .list_by_created_at(&later_clock)
                 .expect("list")
-                .len(),
-            1
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_by_scope("test", &later_clock)
+                .expect("list scope")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_by_type("message", &later_clock)
+                .expect("list type")
+                .is_empty()
         );
     }
 

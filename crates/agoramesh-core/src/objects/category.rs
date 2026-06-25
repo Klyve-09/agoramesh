@@ -9,6 +9,7 @@ use crate::objects::{canonical_body, pubkey_hex, sha256_hex};
 
 /// Minimal Phase 1 category charter anchor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CharterAnchorBody {
     /// Charter text used to anchor the category ID.
     pub text: String,
@@ -20,6 +21,7 @@ pub struct CharterAnchorBody {
 
 /// Signed body for a category object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     /// `AgoraMesh` protocol version.
     pub protocol_version: u32,

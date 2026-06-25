@@ -10,6 +10,7 @@ pub mod comment;
 pub mod post;
 pub mod revocation_certificate;
 pub mod user_profile;
+pub mod validation;
 
 /// Comment parent object kind.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

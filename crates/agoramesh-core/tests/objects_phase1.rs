@@ -174,15 +174,13 @@ fn post_and_comment_builders_use_category_scope_and_typed_parent() {
 fn revocation_certificate_rejects_messages_at_or_after_effective_time() {
     let revoked = Keypair::generate();
     let replacement = Keypair::generate();
-    let authority = Keypair::generate();
     let effective_at = utc(1_700_000_010);
     let before = post::create(&revoked, "category-123", "before", utc(1_700_000_009))
         .expect("create before");
     let after =
         post::create(&revoked, "category-123", "after", effective_at).expect("create after");
     let certificate = revocation_certificate::create(
-        &authority,
-        *revoked.identity().verifying_key().as_bytes(),
+        &revoked,
         Some(*replacement.identity().verifying_key().as_bytes()),
         effective_at,
         "key_compromised",

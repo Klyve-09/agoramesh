@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use agoramesh_core::SystemClock;
-use agoramesh_core::objects::post;
+use agoramesh_core::objects::{post, validation};
 use agoramesh_store::Store;
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -12,6 +12,15 @@ use serde::Serialize;
 use crate::commands::category::{format_timestamp, parse_created_at};
 use crate::commands::helpers;
 use crate::config::Config;
+
+fn ensure_acceptable(message: &agoramesh_core::Message, clock: SystemClock) -> Result<(), Error> {
+    match message.classify_clock_skew(&clock) {
+        agoramesh_core::Verification::Accepted
+        | agoramesh_core::Verification::AcceptedWithWarning(_) => {}
+        agoramesh_core::Verification::Rejected(error) => return Err(Error::Message(error)),
+    }
+    validation::validate_phase1_message(message).map_err(Error::Validation)
+}
 
 #[derive(Debug, Subcommand)]
 pub enum PostCommand {
@@ -60,6 +69,7 @@ fn create(
     let message = post::create(&keypair, &args.category_id, args.text, created_at)?;
     let object_id = message.id().to_hex();
     let clock = SystemClock;
+    ensure_acceptable(&message, clock)?;
     let mut store = helpers::open_store(config)?;
     let _ = store.insert(message, &clock)?;
 
@@ -89,4 +99,6 @@ pub enum Error {
     Store(#[from] agoramesh_store::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error("object validation failed: {0}")]
+    Validation(#[from] validation::Error),
 }

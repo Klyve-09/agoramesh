@@ -49,6 +49,8 @@ enum Command {
     Run {
         #[arg(long, default_value = "127.0.0.1:0")]
         listen: SocketAddr,
+        #[arg(long)]
+        allow_public_bind: bool,
     },
     Peer {
         #[command(subcommand)]
@@ -100,9 +102,12 @@ async fn main() -> color_eyre::Result<()> {
             let config = Config::open(cli.data_dir)?;
             commands::sync::run(&config, &category_id, json).await?;
         }
-        Command::Run { listen } => {
+        Command::Run {
+            listen,
+            allow_public_bind,
+        } => {
             let config = Config::open(cli.data_dir)?;
-            commands::run::run(&config, listen).await?;
+            commands::run::run(&config, listen, allow_public_bind).await?;
         }
         Command::Peer { command } => {
             let config = Config::open(cli.data_dir)?;

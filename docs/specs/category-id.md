@@ -1,20 +1,10 @@
 # Category ID Spec
 
-## Overview
+## Phase 1 provisional
 
-`category_id` is the stable, internal identifier for a category in AgoraMesh. It is derived once, at creation time, from the category's first charter and creation metadata, then treated as immutable for the life of that category.
+Phase 1 uses a minimal embedded charter anchor inside the `category` object instead of a separate `category_charter` object. The embedded anchor contains the charter text, protocol version, and creation timestamp. The category ID is derived from the hash of that anchor plus creator metadata, exactly as specified below under "ID Generation Formula".
 
-The hash input is:
-
-1. `initial_charter_hash`
-2. `creator_pubkey`
-3. `display_name`
-4. `created_at`
-5. `protocol_version`
-
-`initial_charter_hash` is the hash of the first `category_charter` object's `signing_payload`, computed before any amendment exists. After that first charter is published, later charter changes do not rewrite the original hash input, so `category_id` stays fixed.
-
-Users and nodes MUST reference a category by `category_id` internally. `display_name` is for UI and presentation only.
+Full `category_charter` object validation, charter amendments, and governance rules are deferred to Phase 3. In Phase 1, receivers only need to verify that the embedded `initial_charter` hashes to `initial_charter_hash` and that the category ID is recomputed from the stable preimage order.
 
 ## ID Generation Formula
 

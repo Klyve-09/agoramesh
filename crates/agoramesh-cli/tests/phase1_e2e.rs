@@ -11,7 +11,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStderr, Stdio};
 use std::time::Duration;
 
 use assert_cmd::Command;
@@ -26,6 +26,7 @@ const BASE_TIME: &str = "2024-01-01T00:00:00Z";
 struct RunningNode {
     child: Child,
     addr: String,
+    _stderr_pipe: Option<ChildStderr>,
 }
 
 impl Drop for RunningNode {
@@ -186,16 +187,22 @@ fn feed_object_ids(data_dir: &Path, category_id: &str) -> Vec<String> {
 }
 
 fn start_node(data_dir: &Path) -> RunningNode {
-    let mut child = std::process::Command::new(cargo_bin("agoramesh-cli"))
+    start_node_with_args(data_dir, [])
+}
+
+fn start_node_with_args<const N: usize>(data_dir: &Path, extra_args: [&str; N]) -> RunningNode {
+    let mut command = std::process::Command::new(cargo_bin("agoramesh-cli"));
+    command
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
             "--dev-insecure-plaintext-key",
             "run",
         ])
+        .args(extra_args)
         .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawn node");
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn node");
 
     let stdout = child.stdout.take().expect("node stdout");
     let mut reader = BufReader::new(stdout);
@@ -210,13 +217,99 @@ fn start_node(data_dir: &Path) -> RunningNode {
     // Give the server a moment to finish binding.
     std::thread::sleep(Duration::from_millis(50));
 
-    RunningNode { child, addr }
+    RunningNode {
+        child,
+        addr,
+        _stderr_pipe: None,
+    }
+}
+
+fn start_node_with_stderr(data_dir: &Path, extra_args: &[&str]) -> (RunningNode, String) {
+    let mut command = std::process::Command::new(cargo_bin("agoramesh-cli"));
+    command
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 path"),
+            "--dev-insecure-plaintext-key",
+            "run",
+        ])
+        .args(extra_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn node");
+
+    let stdout = child.stdout.take().expect("node stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read listening address");
+    let addr = line
+        .trim()
+        .strip_prefix("listening on ")
+        .expect("listening line")
+        .to_owned();
+
+    let mut stderr = child.stderr.take().expect("node stderr");
+    let mut warning = String::new();
+    BufReader::new(&mut stderr)
+        .read_line(&mut warning)
+        .expect("read warning line");
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    let node = RunningNode {
+        child,
+        addr,
+        _stderr_pipe: Some(stderr),
+    };
+    (node, warning)
 }
 
 #[derive(Debug, Default)]
 struct SyncTotals {
     pulled: usize,
     rejected: usize,
+}
+
+#[tokio::test]
+async fn loopback_bind_is_allowed_by_default() {
+    let node = tempfile::tempdir().expect("tempdir");
+    key_generate(&data_dir(&node));
+    let _server = start_node(&data_dir(&node));
+}
+
+#[tokio::test]
+async fn public_bind_is_rejected_without_flag() {
+    let node = tempfile::tempdir().expect("tempdir");
+    key_generate(&data_dir(&node));
+
+    let output = cli()
+        .args([
+            "--data-dir",
+            data_dir(&node).to_str().expect("utf8 path"),
+            "--dev-insecure-plaintext-key",
+            "run",
+            "--listen",
+            "0.0.0.0:0",
+        ])
+        .output()
+        .expect("run public bind");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("public bind is not allowed"), "{stderr}");
+}
+
+#[tokio::test]
+async fn public_bind_is_allowed_with_flag_and_emits_warning() {
+    let node = tempfile::tempdir().expect("tempdir");
+    key_generate(&data_dir(&node));
+
+    let (server, warning) = start_node_with_stderr(
+        &data_dir(&node),
+        &["--listen", "0.0.0.0:0", "--allow-public-bind"],
+    );
+    assert!(warning.contains("public bind is experimental"), "{warning}");
+    drop(server);
 }
 
 #[tokio::test]
@@ -464,7 +557,29 @@ async fn future_timestamp_policy() {
     let far_future = format_rfc3339(now + TimeDelta::minutes(10));
     let near_future = format_rfc3339(now + TimeDelta::minutes(2));
 
-    let _far_id = post_create(&data_dir(&node_a), &category_id, "Far future", &far_future);
+    let far_result = cli()
+        .args([
+            "--data-dir",
+            data_dir(&node_a).to_str().expect("utf8 path"),
+            "--dev-insecure-plaintext-key",
+            "post",
+            "create",
+            "--category-id",
+            &category_id,
+            "--text",
+            "Far future",
+            "--created-at",
+            &far_future,
+        ])
+        .output()
+        .expect("run far-future post");
+    assert!(
+        !far_result.status.success(),
+        "far-future post should be rejected before storage"
+    );
+    let stderr = String::from_utf8_lossy(&far_result.stderr);
+    assert!(stderr.contains("clock skew too large"), "{stderr}");
+
     let near_id = post_create(
         &data_dir(&node_a),
         &category_id,
@@ -475,12 +590,15 @@ async fn future_timestamp_policy() {
     peer_add(&data_dir(&node_b), &server_a.addr);
     let totals = sync(&data_dir(&node_b), &category_id);
 
-    // Category + near-future post are pulled; the far-future post is rejected.
-    assert_eq!(totals.rejected, 1);
     assert_eq!(totals.pulled, 2);
+    assert_eq!(totals.rejected, 0);
 
     let ids_b = feed_object_ids(&data_dir(&node_b), &category_id);
     assert!(ids_b.contains(&near_id));
+
+    let ids_a = feed_object_ids(&data_dir(&node_a), &category_id);
+    assert_eq!(ids_a.len(), 2);
+    assert!(ids_a.contains(&near_id));
 }
 
 fn format_rfc3339(value: DateTime<Utc>) -> String {

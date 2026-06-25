@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use agoramesh_core::objects::validation;
 use agoramesh_core::{Clock, Message, MessageId, Verification};
 use agoramesh_store::{InsertResult, SqliteStore, Store};
 use axum::extract::{Path, Query, State};
@@ -72,6 +73,8 @@ enum HandlerError {
     NotFound,
     #[error("object rejected: {0}")]
     Rejected(agoramesh_core::message::Error),
+    #[error("object validation failed: {0}")]
+    Invalid(validation::Error),
     #[error("duplicate object")]
     Duplicate,
     #[error("store lock poisoned")]
@@ -146,6 +149,10 @@ pub async fn sync_with_peer(
                 stats.objects_rejected = stats.objects_rejected.saturating_add(1);
                 continue;
             }
+        }
+        if let Err(_error) = validation::validate_phase1_message(&message) {
+            stats.objects_rejected = stats.objects_rejected.saturating_add(1);
+            continue;
         }
         match store.insert(message, clock)? {
             InsertResult::Inserted => {
@@ -233,6 +240,7 @@ async fn post_object(
         Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
         Verification::Rejected(error) => return Err(HandlerError::Rejected(error)),
     }
+    validation::validate_phase1_message(&message).map_err(HandlerError::Invalid)?;
     let mut store = lock_store(&state)?;
     match store.insert(message.clone(), state.clock.as_ref()) {
         Ok(InsertResult::Inserted) => Ok((StatusCode::CREATED, Json(message))),
@@ -252,7 +260,9 @@ impl IntoResponse for HandlerError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
-            Self::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+            Self::Rejected(_) | Self::Invalid(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY.into_response()
+            }
             Self::Duplicate => StatusCode::CONFLICT.into_response(),
             Self::StoreLock | Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }

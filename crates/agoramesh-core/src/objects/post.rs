@@ -8,6 +8,7 @@ use crate::objects::canonical_body;
 
 /// Signed body for a post object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     /// Category that contains this post.
     pub category_id: String,

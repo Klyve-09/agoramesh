@@ -6,7 +6,7 @@ A decentralized mesh-messaging network built in Rust.
 
 - `crates/agoramesh-core` – shared primitives: identities, keys, messages, signing/verification.
 - `crates/agoramesh-store` – persistent SQLite-backed storage with verified read paths.
-- `crates/agoramesh-net` – network transport crate (intentionally empty in Phase 1; QUIC/libp2p/gossipsub will land here in a later phase).
+- `crates/agoramesh-net` – provisional localhost HTTP/JSON direct sync for Phase 1; QUIC/libp2p/gossipsub are deferred.
 - `crates/agoramesh-cli` – command-line entry point.
 
 ## Phase 1 boundary
@@ -28,6 +28,8 @@ Phase 1 deliberately does **not** include:
 - An official server, official relay, official bootstrap node, default public peer list, recommended category list, search, web gateway, or token economy.
 
 All remote peers must be added manually. The default peer list is empty.
+
+The `run` command binds to `127.0.0.1:0` by default. Binding to a non-loopback address requires `--allow-public-bind`; public bind is experimental and not official infrastructure.
 
 ## Development
 

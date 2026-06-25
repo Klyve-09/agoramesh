@@ -8,6 +8,7 @@ use crate::objects::{ParentKind, canonical_body};
 
 /// Signed body for a comment object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Body {
     /// Category that contains this comment.
     pub category_id: String,
