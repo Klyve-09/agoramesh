@@ -23,5 +23,8 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde", "std", "clock"] }
 base64 = "0.22"
 
+[features]
+test-helpers = []
+
 [dev-dependencies]
 pretty_assertions = "1"

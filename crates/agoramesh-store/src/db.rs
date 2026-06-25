@@ -6,6 +6,8 @@
 use std::path::Path;
 
 use agoramesh_core::{Clock, Message, MessageId, Verification};
+#[cfg(test)]
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection as SqliteConnection, OpenFlags, OptionalExtension};
 
 use crate::store::{Error as StoreError, Store};
@@ -58,28 +60,6 @@ impl Connection {
     }
 }
 
-/// A high-level handle that does not yet implement the message `Store` trait.
-///
-/// Use `SqliteStore::new` for a store implementation.
-#[derive(Debug)]
-pub struct ConnectionHandle {
-    connection: Connection,
-}
-
-impl ConnectionHandle {
-    /// Creates a handle backed by an existing connection.
-    #[must_use]
-    pub const fn new(connection: Connection) -> Self {
-        Self { connection }
-    }
-
-    /// Returns a reference to the underlying connection.
-    #[must_use]
-    pub const fn connection(&self) -> &Connection {
-        &self.connection
-    }
-}
-
 /// A SQLite-backed store that only persists verified messages.
 #[derive(Debug)]
 pub struct SqliteStore {
@@ -110,6 +90,37 @@ impl SqliteStore {
         })?;
         Ok(message)
     }
+
+    fn verify_on_read(message: &Message, clock: &dyn Clock) -> Result<(), StoreError> {
+        match message.verify(clock) {
+            Verification::Accepted | Verification::AcceptedWithWarning(_) => Ok(()),
+            Verification::Rejected(error) => Err(StoreError::RejectedOnRead(error)),
+        }
+    }
+
+    fn list<P: rusqlite::Params>(
+        &self,
+        sql: &str,
+        params: P,
+        clock: &dyn Clock,
+    ) -> Result<Vec<Message>, StoreError> {
+        let mut statement = self
+            .connection
+            .inner
+            .prepare(sql)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let rows = statement
+            .query_map(params, Self::message_from_row)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let mut messages = Vec::new();
+        for row in rows {
+            let message = row.map_err(|error| StoreError::Backend(error.to_string()))?;
+            Self::verify_on_read(&message, clock)?;
+            messages.push(message);
+        }
+        sort_by_created_at(&mut messages);
+        Ok(messages)
+    }
 }
 
 impl Store for SqliteStore {
@@ -122,18 +133,13 @@ impl Store for SqliteStore {
                 let message_id = message.id();
                 let id_bytes = message_id.as_bytes();
                 let id = id_bytes.as_slice();
+                let created_at = signed.created_at().datetime().to_rfc3339();
                 self.connection
                     .inner
                     .execute(
                         "INSERT INTO messages (id, kind, scope, created_at, json)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![
-                            id,
-                            signed.kind(),
-                            signed.scope(),
-                            signed.created_at(),
-                            json
-                        ],
+                        rusqlite::params![id, signed.kind(), signed.scope(), created_at, json],
                     )
                     .map_err(|error| {
                         if is_unique_violation(&error) {
@@ -148,10 +154,11 @@ impl Store for SqliteStore {
         }
     }
 
-    fn get(&self, id: MessageId) -> Option<Message> {
+    fn get(&self, id: MessageId, clock: &dyn Clock) -> Result<Option<Message>, StoreError> {
         let id_bytes = id.as_bytes();
         let id_slice = id_bytes.as_slice();
-        self.connection
+        let maybe_message = self
+            .connection
             .inner
             .query_row(
                 "SELECT json FROM messages WHERE id = ?1",
@@ -159,40 +166,50 @@ impl Store for SqliteStore {
                 Self::message_from_row,
             )
             .optional()
-            .map_err(|error| StoreError::Backend(error.to_string()))
-            .ok()
-            .flatten()
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        if let Some(message) = maybe_message {
+            Self::verify_on_read(&message, clock)?;
+            Ok(Some(message))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn list_by_scope(&self, scope: &str) -> Vec<Message> {
+    fn list_by_scope(&self, scope: &str, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
         self.list(
-            "SELECT json FROM messages WHERE scope = ?1 ORDER BY created_at ASC",
+            "SELECT json FROM messages WHERE scope = ?1 ORDER BY created_at ASC, id ASC",
             [scope],
+            clock,
         )
     }
 
-    fn list_by_type(&self, kind: &str) -> Vec<Message> {
+    fn list_by_type(&self, kind: &str, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
         self.list(
-            "SELECT json FROM messages WHERE kind = ?1 ORDER BY created_at ASC",
+            "SELECT json FROM messages WHERE kind = ?1 ORDER BY created_at ASC, id ASC",
             [kind],
+            clock,
         )
     }
 
-    fn list_by_created_at(&self) -> Vec<Message> {
-        self.list("SELECT json FROM messages ORDER BY created_at ASC", [])
+    fn list_by_created_at(&self, clock: &dyn Clock) -> Result<Vec<Message>, StoreError> {
+        self.list(
+            "SELECT json FROM messages ORDER BY created_at ASC, id ASC",
+            [],
+            clock,
+        )
     }
 }
 
-impl SqliteStore {
-    fn list<P: rusqlite::Params>(&self, sql: &str, params: P) -> Vec<Message> {
-        let Ok(mut statement) = self.connection.inner.prepare(sql) else {
-            return Vec::new();
-        };
-        let Ok(rows) = statement.query_map(params, Self::message_from_row) else {
-            return Vec::new();
-        };
-        rows.filter_map(std::result::Result::ok).collect()
-    }
+fn sort_by_created_at(messages: &mut [Message]) {
+    messages.sort_by(|a, b| {
+        let a_payload = a.signed_payload();
+        let b_payload = b.signed_payload();
+        a_payload
+            .created_at()
+            .datetime()
+            .cmp(&b_payload.created_at().datetime())
+            .then_with(|| a.id().cmp(&b.id()))
+    });
 }
 
 fn is_unique_violation(error: &rusqlite::Error) -> bool {
@@ -220,19 +237,24 @@ mod tests {
     use super::*;
     use agoramesh_core::identity::Keypair;
     use agoramesh_core::message::Error as MessageError;
+    use chrono::TimeDelta;
 
     #[derive(Debug, Default)]
     struct FixedClock {
-        now: i64,
+        now: DateTime<Utc>,
     }
 
     impl Clock for FixedClock {
-        fn now(&self) -> i64 {
+        fn now(&self) -> DateTime<Utc> {
             self.now
         }
     }
 
-    fn valid_message(scope: &str, created_at: i64) -> Message {
+    fn utc(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(seconds, 0).expect("valid timestamp")
+    }
+
+    fn valid_message(scope: &str, created_at: DateTime<Utc>) -> Message {
         let keypair = Keypair::generate();
         Message::create(&keypair, created_at, scope.to_owned(), b"hello mesh")
             .expect("create message")
@@ -250,18 +272,18 @@ mod tests {
         let path = dir.path().join("store.db");
         {
             let connection = Connection::open(&path).expect("open new store");
-            let _store = ConnectionHandle::new(connection);
+            let _store = SqliteStore::new(connection);
         }
         {
             let connection = Connection::open(&path).expect("reopen existing store");
-            let _store = ConnectionHandle::new(connection);
+            let _store = SqliteStore::new(connection);
         }
     }
 
     #[test]
     fn store_owns_connection() {
         let connection = Connection::open_in_memory().expect("open in-memory store");
-        let store = ConnectionHandle::new(connection);
+        let store = SqliteStore::new(connection);
         let _ = store.connection();
     }
 
@@ -269,22 +291,29 @@ mod tests {
     fn sqlite_store_inserts_and_recoveres_valid_message() {
         let dir = tempfile::tempdir().expect("create tempdir");
         let path = dir.path().join("store.db");
-        let message = valid_message("test", 1_700_000_000);
+        let message = valid_message("test", utc(1_700_000_000));
 
         {
             let connection = Connection::open(&path).expect("open");
             let mut store = SqliteStore::new(connection);
-            let clock = FixedClock { now: 1_700_000_000 };
+            let clock = FixedClock {
+                now: utc(1_700_000_000),
+            };
             store.insert(message.clone(), &clock).expect("insert");
         }
 
         {
             let connection = Connection::open(&path).expect("reopen");
             let store = SqliteStore::new(connection);
-            let recovered = store.get(message.id()).expect("recover message");
-            assert_eq!(recovered.id(), message.id());
-            let clock = FixedClock { now: 1_700_000_000 };
-            assert_eq!(recovered.verify(&clock), Verification::Accepted);
+            let recovered = store
+                .get(
+                    message.id(),
+                    &FixedClock {
+                        now: utc(1_700_000_000),
+                    },
+                )
+                .expect("recover message");
+            assert_eq!(recovered.map(|message| message.id()), Some(message.id()));
         }
     }
 
@@ -292,16 +321,18 @@ mod tests {
     fn sqlite_store_rejects_invalid_signature() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
-        let message = valid_message("test", 1_700_000_000);
+        let message = valid_message("test", utc(1_700_000_000));
         let mut value: serde_json::Value = serde_json::to_value(&message).expect("serialize");
         let body = value
             .get_mut("signed_payload")
             .and_then(|payload| payload.get_mut("body"))
             .expect("body field");
-        *body = serde_json::json!([0]);
+        *body = serde_json::json!("ZXZpbA");
         let tampered: Message = serde_json::from_value(value).expect("deserialize tampered");
 
-        let clock = FixedClock { now: 1_700_000_000 };
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
         assert!(matches!(
             store.insert(tampered, &clock),
             Err(StoreError::Rejected(
@@ -314,8 +345,10 @@ mod tests {
     fn sqlite_store_rejects_duplicate_object_id() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
-        let message = valid_message("test", 1_700_000_000);
-        let clock = FixedClock { now: 1_700_000_000 };
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
         store.insert(message.clone(), &clock).expect("first insert");
         assert!(matches!(
             store.insert(message, &clock),
@@ -327,17 +360,19 @@ mod tests {
     fn sqlite_store_lists_by_scope_and_created_at() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
-        let clock = FixedClock { now: 1_700_000_010 };
-        let alpha = valid_message("alpha", 1_700_000_000);
-        let beta = valid_message("beta", 1_700_000_001);
+        let clock = FixedClock {
+            now: utc(1_700_000_010),
+        };
+        let alpha = valid_message("alpha", utc(1_700_000_000));
+        let beta = valid_message("beta", utc(1_700_000_001));
         store.insert(alpha.clone(), &clock).expect("insert alpha");
         store.insert(beta.clone(), &clock).expect("insert beta");
 
-        let alpha_list = store.list_by_scope("alpha");
+        let alpha_list = store.list_by_scope("alpha", &clock).expect("list alpha");
         assert_eq!(alpha_list.len(), 1);
         assert_eq!(alpha_list.first().map(Message::id), Some(alpha.id()));
 
-        let all = store.list_by_created_at();
+        let all = store.list_by_created_at(&clock).expect("list all");
         assert_eq!(all.len(), 2);
         assert_eq!(all.first().map(Message::id), Some(alpha.id()));
         assert_eq!(all.get(1).map(Message::id), Some(beta.id()));
@@ -347,11 +382,129 @@ mod tests {
     fn sqlite_store_lists_by_type() {
         let connection = Connection::open_in_memory().expect("open");
         let mut store = SqliteStore::new(connection);
-        let message = valid_message("test", 1_700_000_000);
-        let clock = FixedClock { now: 1_700_000_000 };
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
         store.insert(message, &clock).expect("insert");
 
-        assert_eq!(store.list_by_type("message").len(), 1);
-        assert!(store.list_by_type("unknown").is_empty());
+        assert_eq!(
+            store.list_by_type("message", &clock).expect("list").len(),
+            1
+        );
+        assert!(
+            store
+                .list_by_type("unknown", &clock)
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn sqlite_store_list_uses_object_id_tie_breaker() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let clock = FixedClock {
+            now: utc(1_700_000_010),
+        };
+        let mut messages: Vec<Message> = (0..3)
+            .map(|_| valid_message("test", utc(1_700_000_000)))
+            .collect();
+        messages.sort_by_key(agoramesh_core::Message::id);
+        for message in &messages {
+            store.insert(message.clone(), &clock).expect("insert");
+        }
+
+        let list = store.list_by_created_at(&clock).expect("list");
+        assert_eq!(list.len(), 3);
+        assert!(
+            list.windows(2)
+                .all(|window| window.first().map(Message::id) < window.get(1).map(Message::id))
+        );
+    }
+
+    #[test]
+    fn sqlite_store_read_rejects_corrupted_json() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET json = ?1 WHERE id = ?2",
+                rusqlite::params![b"not json", message.id().as_bytes().as_slice()],
+            )
+            .expect("corrupt row");
+
+        let result = store.get(message.id(), &clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::Backend(_) | StoreError::Serialization(_))
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_read_rejects_tampered_body() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        let mut value: serde_json::Value = serde_json::to_value(&message).expect("serialize");
+        let body = value
+            .get_mut("signed_payload")
+            .and_then(|payload| payload.get_mut("body"))
+            .expect("body");
+        *body = serde_json::json!("Y29ycnVwdGVk");
+        let tampered_json = serde_json::to_vec(&value).expect("serialize tampered");
+
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET json = ?1 WHERE id = ?2",
+                rusqlite::params![tampered_json.as_slice(), message.id().as_bytes().as_slice()],
+            )
+            .expect("tamper row");
+
+        let result = store.get(message.id(), &clock);
+        assert!(matches!(
+            result,
+            Err(StoreError::RejectedOnRead(MessageError::ObjectIdMismatch))
+        ));
+    }
+
+    #[test]
+    fn sqlite_store_lists_future_message() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let created_at =
+            now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1);
+        let message = Message::create(&keypair, created_at, "test".to_owned(), b"hello mesh")
+            .expect("create message");
+
+        let write_clock = FixedClock { now };
+        assert!(matches!(
+            store.insert(message, &write_clock),
+            Err(StoreError::Rejected(MessageError::ClockSkewTooLarge { .. }))
+        ));
+        assert_eq!(
+            store
+                .list_by_created_at(&FixedClock { now })
+                .expect("list")
+                .len(),
+            0
+        );
     }
 }

@@ -8,6 +8,6 @@ pub mod message;
 
 pub use identity::{Identity, Keypair};
 pub use message::{
-    Clock, Message, MessageId, SignedPayload, SkewWarning, SystemClock, TransportMetadata,
-    Verification,
+    Body, Clock, Message, MessageId, SignedPayload, SkewWarning, SystemClock, Timestamp,
+    TransportMetadata, Verification,
 };
