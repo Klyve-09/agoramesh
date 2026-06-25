@@ -2,8 +2,11 @@
 
 use std::fmt;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, SecondsFormat, Utc};
 use ed25519_dalek::{Signature, Verifier};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
 use crate::canonical;
@@ -14,11 +17,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Agoramesh message schema version carried in every message.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// Maximum clock skew accepted before a message is rejected, in seconds.
+/// Maximum clock skew accepted before a message is rejected.
 pub const CLOCK_SKEW_REJECT_SECONDS: i64 = 5 * 60;
 
 /// A stable, content-addressed identifier for a message.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
 pub struct MessageId([u8; 32]);
 
 impl MessageId {
@@ -54,15 +59,146 @@ pub struct SignedPayload {
     kind: String,
     protocol_version: u32,
     schema_version: u32,
-    created_at: i64,
+    created_at: Timestamp,
     author_pubkey: [u8; 32],
     scope: String,
-    body: Vec<u8>,
+    body: Body,
 }
 
 impl SignedPayload {
     fn canonical_bytes(&self) -> Result<Vec<u8>, Error> {
         canonical::to_vec(self).map_err(|error| Error::CanonicalJson(error.to_string()))
+    }
+
+    /// Returns the payload kind/type.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Returns the message scope (category).
+    #[must_use]
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// Returns the creation timestamp.
+    #[must_use]
+    pub const fn created_at(&self) -> &Timestamp {
+        &self.created_at
+    }
+
+    /// Returns the opaque body bytes.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body.0
+    }
+}
+
+/// An RFC 3339 timestamp used in signed payloads.
+///
+/// ADR 0001 requires timestamps to be RFC 3339 strings in Canonical JSON.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Timestamp(DateTime<Utc>);
+
+impl Timestamp {
+    /// Creates a timestamp from a fixed UTC datetime.
+    #[must_use]
+    pub const fn new(datetime: DateTime<Utc>) -> Self {
+        Self(datetime)
+    }
+
+    /// Returns the underlying UTC datetime.
+    #[must_use]
+    pub const fn datetime(&self) -> DateTime<Utc> {
+        self.0
+    }
+}
+
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        DateTime::parse_from_rfc3339(&string)
+            .map(|datetime| Self(datetime.with_timezone(&Utc)))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Binary body encoded as base64url string in JSON.
+///
+/// ADR 0001 requires binary data to be base64url strings inside JSON values.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Body(Vec<u8>);
+
+impl Body {
+    /// Creates a body from raw bytes.
+    #[must_use]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Returns the raw bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for Body {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8]> for Body {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
+impl From<&Vec<u8>> for Body {
+    fn from(value: &Vec<u8>) -> Self {
+        Self(value.clone())
+    }
+}
+
+impl<const N: usize> From<&[u8; N]> for Body {
+    fn from(value: &[u8; N]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
+impl Serialize for Body {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&URL_SAFE_NO_PAD.encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Body {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        URL_SAFE_NO_PAD
+            .decode(string)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -97,12 +233,12 @@ pub enum SkewWarning {
     Past,
 }
 
-/// A source of Unix timestamps used to validate `created_at`.
+/// A source of UTC timestamps used to validate `created_at`.
 ///
 /// Production code uses the system clock; tests can inject a fixed value.
 pub trait Clock: fmt::Debug {
-    /// Returns the current Unix timestamp in seconds.
-    fn now(&self) -> i64;
+    /// Returns the current UTC datetime.
+    fn now(&self) -> DateTime<Utc>;
 }
 
 /// System clock implementation.
@@ -110,12 +246,8 @@ pub trait Clock: fmt::Debug {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-            })
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
@@ -128,19 +260,19 @@ impl Message {
     /// payload fails.
     pub fn create(
         keypair: &crate::Keypair,
-        created_at: i64,
+        created_at: DateTime<Utc>,
         scope: String,
-        body: &[u8],
+        body: impl Into<Body>,
     ) -> Result<Self, Error> {
         let author_id = keypair.identity();
         let signed_payload = SignedPayload {
             kind: "message".to_owned(),
             protocol_version: PROTOCOL_VERSION,
             schema_version: SCHEMA_VERSION,
-            created_at,
+            created_at: Timestamp::new(created_at),
             author_pubkey: *author_id.verifying_key().as_bytes(),
             scope,
-            body: body.to_owned(),
+            body: body.into(),
         };
         let canonical = signed_payload.canonical_bytes()?;
         let id = hash_bytes(&canonical);
@@ -154,7 +286,7 @@ impl Message {
         })
     }
 
-    /// Verifies the message signature and object ID, and checks clock skew.
+    /// Verifies the message signature, object ID, and author consistency.
     ///
     /// # Errors
     ///
@@ -164,6 +296,10 @@ impl Message {
             Ok(bytes) => bytes,
             Err(error) => return Verification::Rejected(error),
         };
+
+        if self.signed_payload.author_pubkey != *self.author_id.verifying_key().as_bytes() {
+            return Verification::Rejected(Error::AuthorPubkeyMismatch);
+        }
 
         let expected_id = hash_bytes(&canonical);
         if expected_id != self.id {
@@ -180,7 +316,7 @@ impl Message {
             });
         }
 
-        classify_skew(self.signed_payload.created_at, clock.now())
+        classify_skew(self.signed_payload.created_at.datetime(), clock.now())
     }
 
     /// Returns the message identifier.
@@ -216,16 +352,15 @@ impl Message {
     /// Returns the opaque body bytes stored inside the signed payload.
     #[must_use]
     pub fn body(&self) -> &[u8] {
-        &self.signed_payload.body
+        self.signed_payload.body.as_bytes()
     }
 }
 
-fn classify_skew(created_at: i64, now: i64) -> Verification {
-    let delta = created_at.saturating_sub(now);
-    let abs_delta = delta.checked_abs().unwrap_or(i64::MAX);
+fn classify_skew(created_at: DateTime<Utc>, now: DateTime<Utc>) -> Verification {
+    let delta = created_at.signed_duration_since(now).num_seconds();
 
     if delta > CLOCK_SKEW_REJECT_SECONDS {
-        return Verification::Rejected(Error::ClockSkewTooLarge { seconds: abs_delta });
+        return Verification::Rejected(Error::ClockSkewTooLarge { seconds: delta });
     }
     if delta > 0 {
         return Verification::AcceptedWithWarning(SkewWarning::Future);
@@ -250,6 +385,10 @@ pub enum Error {
     #[error("object id does not match canonical signing payload")]
     ObjectIdMismatch,
 
+    /// The signed author public key does not match the claimed author identity.
+    #[error("signed author public key does not match author identity")]
+    AuthorPubkeyMismatch,
+
     /// The signature is invalid for the claimed author and payload.
     #[error("invalid signature: {inner}")]
     InvalidSignature {
@@ -260,7 +399,7 @@ pub enum Error {
     /// The message timestamp is too far from the verifier's clock.
     #[error("clock skew too large: {seconds} seconds")]
     ClockSkewTooLarge {
-        /// Absolute skew in seconds.
+        /// Skew in seconds (positive means future-dated).
         seconds: i64,
     },
 }
@@ -269,22 +408,27 @@ pub enum Error {
 mod tests {
     use super::*;
     use crate::identity::Keypair;
+    use chrono::TimeDelta;
 
     #[derive(Debug, Default)]
     struct FixedClock {
-        now: i64,
+        now: DateTime<Utc>,
     }
 
     impl Clock for FixedClock {
-        fn now(&self) -> i64 {
+        fn now(&self) -> DateTime<Utc> {
             self.now
         }
+    }
+
+    fn utc(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(seconds, 0).expect("valid timestamp")
     }
 
     #[test]
     fn create_produces_valid_verifiable_message() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
+        let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
         let message =
             Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
@@ -298,11 +442,11 @@ mod tests {
     #[test]
     fn verify_rejects_tampered_body() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
+        let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
         let mut message =
             Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
-        message.signed_payload.body = b"evil".to_vec();
+        message.signed_payload.body = Body::from(b"evil".as_slice());
 
         let clock = FixedClock { now };
         assert!(matches!(
@@ -314,11 +458,11 @@ mod tests {
     #[test]
     fn verify_rejects_tampered_created_at() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
+        let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
         let mut message =
             Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
-        message.signed_payload.created_at = now + 1;
+        message.signed_payload.created_at = Timestamp::new(now + TimeDelta::seconds(1));
 
         let clock = FixedClock { now };
         assert!(matches!(
@@ -331,7 +475,7 @@ mod tests {
     fn verify_rejects_wrong_author() {
         let alice = Keypair::generate();
         let bob = Keypair::generate();
-        let now = 1_700_000_000;
+        let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
         let mut message =
             Message::create(&alice, now, "test".to_owned(), &body).expect("create message");
@@ -340,15 +484,38 @@ mod tests {
         let clock = FixedClock { now };
         assert!(matches!(
             message.verify(&clock),
-            Verification::Rejected(Error::ObjectIdMismatch | Error::InvalidSignature { .. })
+            Verification::Rejected(
+                Error::ObjectIdMismatch
+                    | Error::AuthorPubkeyMismatch
+                    | Error::InvalidSignature { .. }
+            )
         ));
+    }
+
+    #[test]
+    fn verify_rejects_author_pubkey_mismatch() {
+        let alice = Keypair::generate();
+        let bob = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let body = b"hello mesh".to_vec();
+        let mut message =
+            Message::create(&alice, now, "test".to_owned(), &body).expect("create message");
+        message.signed_payload.author_pubkey = *bob.identity().verifying_key().as_bytes();
+        // Keep the original object id and signature valid for Alice, but change
+        // the signed pubkey to Bob. The pubkey check must fail before signature.
+
+        let clock = FixedClock { now };
+        assert_eq!(
+            message.verify(&clock),
+            Verification::Rejected(Error::AuthorPubkeyMismatch)
+        );
     }
 
     #[test]
     fn verify_warns_on_small_future_skew() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
-        let created_at = now + 60;
+        let now = utc(1_700_000_000);
+        let created_at = now + TimeDelta::seconds(60);
         let body = b"hello mesh".to_vec();
         let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
             .expect("create message");
@@ -363,8 +530,8 @@ mod tests {
     #[test]
     fn verify_accepts_small_past_skew() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
-        let created_at = now - 60;
+        let now = utc(1_700_000_000);
+        let created_at = now - TimeDelta::seconds(60);
         let body = b"hello mesh".to_vec();
         let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
             .expect("create message");
@@ -376,8 +543,8 @@ mod tests {
     #[test]
     fn verify_rejects_large_future_skew() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
-        let created_at = now + CLOCK_SKEW_REJECT_SECONDS + 1;
+        let now = utc(1_700_000_000);
+        let created_at = now + TimeDelta::seconds(CLOCK_SKEW_REJECT_SECONDS + 1);
         let body = b"hello mesh".to_vec();
         let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
             .expect("create message");
@@ -392,8 +559,8 @@ mod tests {
     #[test]
     fn verify_accepts_large_past_skew() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
-        let created_at = now - CLOCK_SKEW_REJECT_SECONDS - 1;
+        let now = utc(1_700_000_000);
+        let created_at = now - TimeDelta::seconds(CLOCK_SKEW_REJECT_SECONDS + 1);
         let body = b"hello mesh".to_vec();
         let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
             .expect("create message");
@@ -405,7 +572,7 @@ mod tests {
     #[test]
     fn transport_metadata_does_not_affect_signature() {
         let keypair = Keypair::generate();
-        let now = 1_700_000_000;
+        let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
         let mut message =
             Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
@@ -413,5 +580,30 @@ mod tests {
 
         let clock = FixedClock { now };
         assert_eq!(message.verify(&clock), Verification::Accepted);
+    }
+
+    #[test]
+    fn rfc3339_timestamp_roundtrips_through_canonical_json() {
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let message =
+            Message::create(&keypair, now, "test".to_owned(), b"hello mesh").expect("create");
+        let json = canonical::to_vec(&message.signed_payload).expect("canonicalize");
+        let text = String::from_utf8(json).expect("utf8");
+        assert!(
+            text.contains("\"created_at\":\"2023-11-14T22:13:20Z\""),
+            "actual: {text}"
+        );
+    }
+
+    #[test]
+    fn body_serializes_as_base64url_string() {
+        let keypair = Keypair::generate();
+        let now = utc(1_700_000_000);
+        let message =
+            Message::create(&keypair, now, "test".to_owned(), b"hello mesh").expect("create");
+        let json = canonical::to_vec(&message.signed_payload).expect("canonicalize");
+        let text = String::from_utf8(json).expect("utf8");
+        assert!(text.contains("\"body\":\"aGVsbG8gbWVzaA\""));
     }
 }

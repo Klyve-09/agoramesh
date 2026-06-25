@@ -4,10 +4,14 @@ A decentralized mesh-messaging network built in Rust.
 
 ## Crates
 
-- `crates/agoramesh-core` – shared primitives: identities, keys, messages.
-- `crates/agoramesh-store` – persistent SQLite-backed storage.
-- `crates/agoramesh-net` – QUIC-based peer-to-peer transport.
+- `crates/agoramesh-core` – shared primitives: identities, keys, messages, signing/verification.
+- `crates/agoramesh-store` – persistent SQLite-backed storage with verified read paths.
+- `crates/agoramesh-net` – network transport crate (intentionally empty in Phase 1; QUIC/libp2p/gossipsub will land here in a later phase).
 - `crates/agoramesh-cli` – command-line entry point.
+
+## Phase 1 boundary
+
+This milestone implements canonical message signing/verification and verified local storage. It deliberately does **not** include QUIC endpoint binding, libp2p/gossipsub propagation, a ratatui TUI, moderation/reporting, or media features.
 
 ## Development
 
