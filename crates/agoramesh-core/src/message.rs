@@ -32,6 +32,72 @@ impl MessageId {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Encodes the identifier as lowercase hexadecimal.
+    #[must_use]
+    pub fn to_hex(&self) -> String {
+        hex_encode(&self.0)
+    }
+
+    /// Decodes a lowercase or uppercase hexadecimal identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not exactly 64 hex characters or
+    /// contains a non-hex character.
+    pub fn from_hex(value: &str) -> Result<Self, MessageIdHexError> {
+        let bytes = value.as_bytes();
+        if bytes.len() != 64 {
+            return Err(MessageIdHexError::InvalidLength {
+                actual: bytes.len(),
+            });
+        }
+
+        let mut id = [0_u8; 32];
+        for (index, pair) in bytes.chunks_exact(2).enumerate() {
+            let first = *pair
+                .first()
+                .ok_or(MessageIdHexError::InvalidLength { actual: 0 })?;
+            let second = *pair
+                .get(1)
+                .ok_or(MessageIdHexError::InvalidLength { actual: 0 })?;
+            let high = hex_nibble(first).ok_or_else(|| MessageIdHexError::InvalidCharacter {
+                character: char::from(first),
+                index: index.saturating_mul(2),
+            })?;
+            let low = hex_nibble(second).ok_or_else(|| MessageIdHexError::InvalidCharacter {
+                character: char::from(second),
+                index: index.saturating_mul(2).saturating_add(1),
+            })?;
+            if let Some(slot) = id.get_mut(index) {
+                *slot = (high << 4) | low;
+            } else {
+                return Err(MessageIdHexError::InvalidLength { actual: 0 });
+            }
+        }
+
+        Ok(Self(id))
+    }
+}
+
+/// Errors returned while decoding a hexadecimal [`MessageId`].
+#[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
+pub enum MessageIdHexError {
+    /// The encoded ID length is not 64 characters.
+    #[error("message id hex must be 64 characters, got {actual}")]
+    InvalidLength {
+        /// The supplied string length in bytes.
+        actual: usize,
+    },
+
+    /// A non-hex character was found.
+    #[error("invalid hex character {character:?} at byte {index}")]
+    InvalidCharacter {
+        /// The invalid character.
+        character: char,
+        /// The byte index where the invalid character appeared.
+        index: usize,
+    },
 }
 
 impl From<[u8; 32]> for MessageId {
@@ -236,7 +302,7 @@ pub enum SkewWarning {
 /// A source of UTC timestamps used to validate `created_at`.
 ///
 /// Production code uses the system clock; tests can inject a fixed value.
-pub trait Clock: fmt::Debug {
+pub trait Clock: fmt::Debug + Send + Sync {
     /// Returns the current UTC datetime.
     fn now(&self) -> DateTime<Utc>;
 }
@@ -260,13 +326,14 @@ impl Message {
     /// payload fails.
     pub fn create(
         keypair: &crate::Keypair,
+        kind: impl Into<String>,
         created_at: DateTime<Utc>,
         scope: String,
         body: impl Into<Body>,
     ) -> Result<Self, Error> {
         let author_id = keypair.identity();
         let signed_payload = SignedPayload {
-            kind: "message".to_owned(),
+            kind: kind.into(),
             protocol_version: PROTOCOL_VERSION,
             schema_version: SCHEMA_VERSION,
             created_at: Timestamp::new(created_at),
@@ -291,7 +358,7 @@ impl Message {
     /// # Errors
     ///
     /// Never returns `Err`; errors are represented as `Verification::Rejected`.
-    pub fn verify(&self, clock: &dyn Clock) -> Verification {
+    pub fn verify(&self) -> Verification {
         let canonical = match self.signed_payload.canonical_bytes() {
             Ok(bytes) => bytes,
             Err(error) => return Verification::Rejected(error),
@@ -316,6 +383,12 @@ impl Message {
             });
         }
 
+        Verification::Accepted
+    }
+
+    /// Classifies the message's `created_at` against the current clock.
+    #[must_use]
+    pub fn classify_clock_skew(&self, clock: &dyn Clock) -> Verification {
         classify_skew(self.signed_payload.created_at.datetime(), clock.now())
     }
 
@@ -374,6 +447,31 @@ fn hash_bytes(bytes: &[u8]) -> MessageId {
     MessageId(hasher.finalize().into())
 }
 
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        let high = usize::from(byte >> 4);
+        let low = usize::from(byte & 0x0f);
+        output.push(char::from(HEX.get(high).copied().unwrap_or(b'0')));
+        output.push(char::from(HEX.get(low).copied().unwrap_or(b'0')));
+    }
+    output
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "match arms guarantee inputs stay within ranges that cannot overflow"
+)]
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Errors that can occur while constructing or validating a message.
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 pub enum Error {
@@ -430,13 +528,13 @@ mod tests {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let message =
-            Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
+        let message = Message::create(&keypair, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         assert_eq!(message.author_id(), &keypair.identity());
         assert_eq!(message.body(), body);
 
         let clock = FixedClock { now };
-        assert_eq!(message.verify(&clock), Verification::Accepted);
+        assert_eq!(message.classify_clock_skew(&clock), Verification::Accepted);
     }
 
     #[test]
@@ -444,13 +542,12 @@ mod tests {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let mut message =
-            Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
+        let mut message = Message::create(&keypair, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         message.signed_payload.body = Body::from(b"evil".as_slice());
 
-        let clock = FixedClock { now };
         assert!(matches!(
-            message.verify(&clock),
+            message.verify(),
             Verification::Rejected(Error::ObjectIdMismatch | Error::InvalidSignature { .. })
         ));
     }
@@ -460,13 +557,12 @@ mod tests {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let mut message =
-            Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
+        let mut message = Message::create(&keypair, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         message.signed_payload.created_at = Timestamp::new(now + TimeDelta::seconds(1));
 
-        let clock = FixedClock { now };
         assert!(matches!(
-            message.verify(&clock),
+            message.verify(),
             Verification::Rejected(Error::ObjectIdMismatch | Error::InvalidSignature { .. })
         ));
     }
@@ -477,13 +573,12 @@ mod tests {
         let bob = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let mut message =
-            Message::create(&alice, now, "test".to_owned(), &body).expect("create message");
+        let mut message = Message::create(&alice, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         message.author_id = bob.identity();
 
-        let clock = FixedClock { now };
         assert!(matches!(
-            message.verify(&clock),
+            message.verify(),
             Verification::Rejected(
                 Error::ObjectIdMismatch
                     | Error::AuthorPubkeyMismatch
@@ -498,15 +593,14 @@ mod tests {
         let bob = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let mut message =
-            Message::create(&alice, now, "test".to_owned(), &body).expect("create message");
+        let mut message = Message::create(&alice, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         message.signed_payload.author_pubkey = *bob.identity().verifying_key().as_bytes();
         // Keep the original object id and signature valid for Alice, but change
         // the signed pubkey to Bob. The pubkey check must fail before signature.
 
-        let clock = FixedClock { now };
         assert_eq!(
-            message.verify(&clock),
+            message.verify(),
             Verification::Rejected(Error::AuthorPubkeyMismatch)
         );
     }
@@ -517,12 +611,12 @@ mod tests {
         let now = utc(1_700_000_000);
         let created_at = now + TimeDelta::seconds(60);
         let body = b"hello mesh".to_vec();
-        let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
+        let message = Message::create(&keypair, "message", created_at, "test".to_owned(), &body)
             .expect("create message");
 
         let clock = FixedClock { now };
         assert_eq!(
-            message.verify(&clock),
+            message.classify_clock_skew(&clock),
             Verification::AcceptedWithWarning(SkewWarning::Future)
         );
     }
@@ -533,11 +627,11 @@ mod tests {
         let now = utc(1_700_000_000);
         let created_at = now - TimeDelta::seconds(60);
         let body = b"hello mesh".to_vec();
-        let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
+        let message = Message::create(&keypair, "message", created_at, "test".to_owned(), &body)
             .expect("create message");
 
         let clock = FixedClock { now };
-        assert_eq!(message.verify(&clock), Verification::Accepted);
+        assert_eq!(message.classify_clock_skew(&clock), Verification::Accepted);
     }
 
     #[test]
@@ -546,12 +640,12 @@ mod tests {
         let now = utc(1_700_000_000);
         let created_at = now + TimeDelta::seconds(CLOCK_SKEW_REJECT_SECONDS + 1);
         let body = b"hello mesh".to_vec();
-        let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
+        let message = Message::create(&keypair, "message", created_at, "test".to_owned(), &body)
             .expect("create message");
 
         let clock = FixedClock { now };
         assert!(matches!(
-            message.verify(&clock),
+            message.classify_clock_skew(&clock),
             Verification::Rejected(Error::ClockSkewTooLarge { .. })
         ));
     }
@@ -562,11 +656,11 @@ mod tests {
         let now = utc(1_700_000_000);
         let created_at = now - TimeDelta::seconds(CLOCK_SKEW_REJECT_SECONDS + 1);
         let body = b"hello mesh".to_vec();
-        let message = Message::create(&keypair, created_at, "test".to_owned(), &body)
+        let message = Message::create(&keypair, "message", created_at, "test".to_owned(), &body)
             .expect("create message");
 
         let clock = FixedClock { now };
-        assert_eq!(message.verify(&clock), Verification::Accepted);
+        assert_eq!(message.classify_clock_skew(&clock), Verification::Accepted);
     }
 
     #[test]
@@ -574,20 +668,19 @@ mod tests {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
         let body = b"hello mesh".to_vec();
-        let mut message =
-            Message::create(&keypair, now, "test".to_owned(), &body).expect("create message");
+        let mut message = Message::create(&keypair, "message", now, "test".to_owned(), &body)
+            .expect("create message");
         message.transport_metadata.hop_count = 42;
 
-        let clock = FixedClock { now };
-        assert_eq!(message.verify(&clock), Verification::Accepted);
+        assert_eq!(message.verify(), Verification::Accepted);
     }
 
     #[test]
     fn rfc3339_timestamp_roundtrips_through_canonical_json() {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
-        let message =
-            Message::create(&keypair, now, "test".to_owned(), b"hello mesh").expect("create");
+        let message = Message::create(&keypair, "message", now, "test".to_owned(), b"hello mesh")
+            .expect("create");
         let json = canonical::to_vec(&message.signed_payload).expect("canonicalize");
         let text = String::from_utf8(json).expect("utf8");
         assert!(
@@ -600,8 +693,8 @@ mod tests {
     fn body_serializes_as_base64url_string() {
         let keypair = Keypair::generate();
         let now = utc(1_700_000_000);
-        let message =
-            Message::create(&keypair, now, "test".to_owned(), b"hello mesh").expect("create");
+        let message = Message::create(&keypair, "message", now, "test".to_owned(), b"hello mesh")
+            .expect("create");
         let json = canonical::to_vec(&message.signed_payload).expect("canonicalize");
         let text = String::from_utf8(json).expect("utf8");
         assert!(text.contains("\"body\":\"aGVsbG8gbWVzaA\""));
