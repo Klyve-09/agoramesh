@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::app::AppState;
 use crate::models::{AcknowledgedFirstSeen, CategorySummary, FirstSeenWarning, PeerStatus};
@@ -35,12 +35,12 @@ pub fn compute_warnings(
     warnings
 }
 
-/// Renders first-seen warnings in a dedicated panel.
-pub fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
+pub(crate) fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
     if state.warnings.is_empty() {
+        Clear.render(area, buf);
         return;
     }
-    let lines: Vec<Line<'_>> = state
+    let text: Vec<Line<'_>> = state
         .warnings
         .iter()
         .map(|warning| match warning {
@@ -64,16 +64,18 @@ pub fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
             ]),
         })
         .collect();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("First-seen warnings");
-    Paragraph::new(lines).block(block).render(area, buf);
+    let paragraph = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title("Warnings"))
+        .wrap(Wrap { trim: true });
+    paragraph.render(area, buf);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn sample_category(category_id: &str) -> CategorySummary {
         CategorySummary {
@@ -113,5 +115,26 @@ mod tests {
         acknowledged.peers.push("http://127.0.0.1:8080".to_owned());
         let warnings = compute_warnings(&[], &[peer], &acknowledged);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn first_seen_render_warnings_shows_warning_text() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 5)).expect("terminal");
+        let mut state = AppState::new();
+        state.warnings.push(FirstSeenWarning::Peer {
+            address: "http://127.0.0.1:8080".to_owned(),
+        });
+
+        terminal
+            .draw(|frame| render_warnings(&state, frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(text.contains("First time seeing peer"));
+        assert!(text.contains("Warnings"));
     }
 }

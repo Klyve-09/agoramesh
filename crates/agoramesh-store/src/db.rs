@@ -6,8 +6,7 @@
 use std::path::Path;
 
 use agoramesh_core::{Clock, Message, MessageId, Verification};
-#[cfg(test)]
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection as SqliteConnection, OpenFlags, OptionalExtension};
 
 use crate::store::{Error as StoreError, InsertResult, Store};
@@ -126,14 +125,12 @@ impl SqliteStore {
                 field: "scope".to_owned(),
             });
         }
-        if row.created_at
-            != row
-                .message
-                .signed_payload()
-                .created_at()
-                .datetime()
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        {
+        let created_at = DateTime::parse_from_rfc3339(&row.created_at)
+            .map(|datetime| datetime.with_timezone(&Utc))
+            .map_err(|_| StoreError::CorruptStoredMessage {
+                field: "created_at".to_owned(),
+            })?;
+        if created_at != row.message.signed_payload().created_at().datetime() {
             return Err(StoreError::CorruptStoredMessage {
                 field: "created_at".to_owned(),
             });
@@ -231,7 +228,7 @@ impl Store for SqliteStore {
         let created_at = signed
             .created_at()
             .datetime()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
         self.connection
             .inner
             .execute(
@@ -781,5 +778,39 @@ mod tests {
             Err(StoreError::CorruptStoredMessage { field })
             if field == "created_at"
         ));
+    }
+
+    #[test]
+    fn sqlite_store_accepts_legacy_created_at_offset_string() {
+        let connection = Connection::open_in_memory().expect("open");
+        let mut store = SqliteStore::new(connection);
+        let message = valid_message("test", utc(1_700_000_000));
+        let clock = FixedClock {
+            now: utc(1_700_000_000),
+        };
+        store.insert(message.clone(), &clock).expect("insert");
+
+        let legacy_created_at = message
+            .signed_payload()
+            .created_at()
+            .datetime()
+            .to_rfc3339_opts(SecondsFormat::Secs, false);
+        store
+            .connection
+            .inner
+            .execute(
+                "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![legacy_created_at, message.id().as_bytes().as_slice()],
+            )
+            .expect("update created_at");
+
+        assert_eq!(
+            store.get(message.id(), &clock).expect("get"),
+            Some(message.clone())
+        );
+        assert_eq!(
+            store.list_by_created_at(&clock).expect("list"),
+            vec![message]
+        );
     }
 }

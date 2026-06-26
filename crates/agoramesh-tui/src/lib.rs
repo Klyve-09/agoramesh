@@ -12,5 +12,6 @@ pub mod models;
 pub mod render;
 pub mod subscriptions;
 pub mod sync_status;
+/// Terminal lifecycle and main event loop.
 pub mod terminal;
 pub mod thread;

@@ -1,5 +1,6 @@
 //! Data gateway between the TUI and the underlying `AgoraMesh` crates.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use agoramesh_cli::config::Config;
@@ -7,7 +8,9 @@ use agoramesh_cli::keyring::{self, Keyring};
 use agoramesh_cli::peers::Peers;
 use agoramesh_core::SystemClock;
 use agoramesh_core::identity::Keypair;
-use agoramesh_core::objects::{category as category_obj, comment as comment_obj, post as post_obj};
+use agoramesh_core::objects::{
+    ParentKind, category as category_obj, comment as comment_obj, post as post_obj,
+};
 use agoramesh_store::db::{Connection, SqliteStore};
 use agoramesh_store::store::Store;
 use chrono::{DateTime, Utc};
@@ -226,24 +229,19 @@ impl Backend {
 
         let scope = post_message.signed_payload().scope();
         let messages = store.list_by_scope(scope, &clock)?;
-        let mut comments = Vec::new();
+        let mut comments_by_parent = HashMap::new();
         for message in messages {
             if message.signed_payload().kind() != "comment" {
                 continue;
             }
-            let body: comment_obj::Body = serde_json::from_slice(message.signed_payload().body())
-                .map_err(|error| Error::Message(error.to_string()))?;
-            if body.parent_id == post_id {
-                comments.push(ThreadComment {
-                    object_id: message.id().to_hex(),
-                    author_id: hex::encode(message.signed_payload().author_pubkey()),
-                    text: body.text,
-                    created_at: body.created_at,
-                    replies: Vec::new(),
-                    collapsed: false,
-                });
-            }
+            let loaded_comment = LoadedComment::from_message(&message)?;
+            comments_by_parent
+                .entry(loaded_comment.parent_id)
+                .or_insert_with(Vec::new)
+                .push(loaded_comment);
         }
+        let comments =
+            build_comment_tree(post_message_id, &ParentKind::Post, &mut comments_by_parent);
 
         Ok(ThreadView { post, comments })
     }
@@ -315,11 +313,74 @@ fn save_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Error> {
     std::fs::write(path, bytes).map_err(Error::StateIo)
 }
 
+#[derive(Debug)]
+struct LoadedComment {
+    object_id: agoramesh_core::MessageId,
+    object_id_hex: String,
+    author_id: String,
+    text: String,
+    created_at: DateTime<Utc>,
+    parent_kind: ParentKind,
+    parent_id: agoramesh_core::MessageId,
+}
+
+impl LoadedComment {
+    fn from_message(message: &agoramesh_core::Message) -> Result<Self, Error> {
+        let body: comment_obj::Body = serde_json::from_slice(message.signed_payload().body())
+            .map_err(|error| Error::Message(error.to_string()))?;
+        let parent_id = agoramesh_core::MessageId::from_hex(&body.parent_id)
+            .map_err(|error| Error::Message(error.to_string()))?;
+        Ok(Self {
+            object_id: message.id(),
+            object_id_hex: message.id().to_hex(),
+            author_id: hex::encode(message.signed_payload().author_pubkey()),
+            text: body.text,
+            created_at: body.created_at,
+            parent_kind: body.parent_kind,
+            parent_id,
+        })
+    }
+}
+
+fn sort_comments(comments: &mut [LoadedComment]) {
+    comments.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.object_id_hex.cmp(&right.object_id_hex))
+    });
+}
+
+fn build_comment_tree(
+    parent_id: agoramesh_core::MessageId,
+    parent_kind: &ParentKind,
+    comments_by_parent: &mut HashMap<agoramesh_core::MessageId, Vec<LoadedComment>>,
+) -> Vec<ThreadComment> {
+    let mut comments = comments_by_parent.remove(&parent_id).unwrap_or_default();
+    comments.retain(|comment| comment.parent_kind == *parent_kind);
+    sort_comments(&mut comments);
+
+    comments
+        .into_iter()
+        .map(|comment| ThreadComment {
+            object_id: comment.object_id_hex,
+            author_id: comment.author_id,
+            text: comment.text,
+            created_at: comment.created_at,
+            replies: build_comment_tree(
+                comment.object_id,
+                &ParentKind::Comment,
+                comments_by_parent,
+            ),
+            collapsed: false,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agoramesh_core::Keypair;
-    use agoramesh_core::objects::category;
+    use agoramesh_core::objects::{ParentKind, category, comment as comment_obj};
     use chrono::Timelike;
 
     fn backend_fixture(plaintext: bool) -> (Backend, tempfile::TempDir) {
@@ -363,6 +424,97 @@ mod tests {
             posts.first().map_or("", |post| post.text.as_str()),
             "Hello from the TUI feed"
         );
+    }
+
+    #[test]
+    fn backend_loads_nested_thread_replies() {
+        let (backend, _temp_dir) = backend_fixture(true);
+        let keypair = Keypair::generate();
+        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
+        let category = category::create(
+            &keypair,
+            created_at,
+            "Thread Category",
+            "A test category",
+            "Initial charter text",
+        )
+        .expect("create category");
+        let category_id = category.signed_payload().scope().to_owned();
+        let mut store = backend.store().expect("open store");
+        let clock = SystemClock;
+        store.insert(category, &clock).expect("insert category");
+
+        let post = post_obj::create(
+            &keypair,
+            &category_id,
+            "Hello from the thread view",
+            created_at,
+        )
+        .expect("create post");
+        let post_id = post.id().to_hex();
+        store.insert(post, &clock).expect("insert post");
+
+        let top_comment = comment_obj::create(
+            &keypair,
+            &category_id,
+            ParentKind::Post,
+            agoramesh_core::MessageId::from_hex(&post_id).expect("parse post id"),
+            "Top-level comment",
+            created_at,
+        )
+        .expect("create top comment");
+        let top_comment_id = top_comment.id().to_hex();
+        store
+            .insert(top_comment, &clock)
+            .expect("insert top comment");
+
+        let first_reply = comment_obj::create(
+            &keypair,
+            &category_id,
+            ParentKind::Comment,
+            agoramesh_core::MessageId::from_hex(&top_comment_id).expect("parse top comment id"),
+            "First reply",
+            created_at,
+        )
+        .expect("create first reply");
+        let first_reply_id = first_reply.id().to_hex();
+        store
+            .insert(first_reply, &clock)
+            .expect("insert first reply");
+
+        let second_reply = comment_obj::create(
+            &keypair,
+            &category_id,
+            ParentKind::Comment,
+            agoramesh_core::MessageId::from_hex(&top_comment_id).expect("parse top comment id"),
+            "Second reply",
+            created_at,
+        )
+        .expect("create second reply");
+        let second_reply_id = second_reply.id().to_hex();
+        store
+            .insert(second_reply, &clock)
+            .expect("insert second reply");
+
+        let thread = backend.load_thread(&post_id).expect("load thread");
+        assert_eq!(thread.post.text, "Hello from the thread view");
+        assert_eq!(thread.comments.len(), 1);
+
+        let comment = thread.comments.first().expect("top-level comment");
+        assert_eq!(comment.text, "Top-level comment");
+        assert_eq!(comment.replies.len(), 2);
+
+        let expected_reply_ids = {
+            let mut ids = vec![first_reply_id, second_reply_id];
+            ids.sort();
+            ids
+        };
+        let loaded_reply_ids: Vec<_> = comment
+            .replies
+            .iter()
+            .map(|reply| reply.object_id.as_str())
+            .collect();
+        assert_eq!(loaded_reply_ids, expected_reply_ids);
     }
 
     #[test]

@@ -4,17 +4,18 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::app::AppState;
 use crate::compose::ComposeState;
-use crate::models::{FirstSeenWarning, Screen, SyncTotals};
+use crate::first_seen::render_warnings as render_first_seen_warnings;
+use crate::models::{Screen, SyncTotals};
 
 /// Renders the full application shell into the provided buffer area.
 pub fn render_shell(state: &AppState, area: Rect, buf: &mut Buffer) {
     let layout = shell_layout(area);
     render_header(state, layout.header, buf);
-    render_warnings(state, layout.warnings, buf);
+    render_first_seen_warnings(state, layout.warnings, buf);
     render_body(state, layout.body, buf);
     render_footer(state, layout.footer, buf);
 }
@@ -89,41 +90,6 @@ fn render_header(state: &AppState, area: Rect, buf: &mut Buffer) {
     header.render(area, buf);
 }
 
-fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
-    if state.warnings.is_empty() {
-        Clear.render(area, buf);
-        return;
-    }
-    let text: Vec<Line<'_>> = state
-        .warnings
-        .iter()
-        .map(|warning| match warning {
-            FirstSeenWarning::Category {
-                category_id,
-                display_name,
-            } => {
-                let name = display_name.as_deref().unwrap_or(category_id.as_str());
-                Line::from(vec![
-                    Span::styled("! ", Style::default().fg(Color::Yellow)),
-                    Span::raw(format!(
-                        "First time seeing category '{name}' ({category_id}). Press Enter to acknowledge.",
-                    )),
-                ])
-            }
-            FirstSeenWarning::Peer { address } => Line::from(vec![
-                Span::styled("! ", Style::default().fg(Color::Yellow)),
-                Span::raw(format!(
-                    "First time seeing peer {address}. Press Enter to acknowledge."
-                )),
-            ]),
-        })
-        .collect();
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Warnings"))
-        .wrap(Wrap { trim: true });
-    paragraph.render(area, buf);
-}
-
 fn render_body(state: &AppState, area: Rect, buf: &mut Buffer) {
     render_body_for_screen(state, &state.compose, area, buf);
 }
@@ -150,6 +116,7 @@ pub fn render_sync_totals(totals: &SyncTotals, area: Rect, buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FirstSeenWarning;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -169,5 +136,25 @@ mod tests {
         assert!(text.contains("AgoraMesh"));
         assert!(text.contains("Feed"));
         assert!(text.contains("Ctrl+q:Quit"));
+    }
+
+    #[test]
+    fn first_seen_render_shell_shows_warnings() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        let mut state = AppState::new();
+        state.warnings.push(FirstSeenWarning::Peer {
+            address: "http://127.0.0.1:8080".to_owned(),
+        });
+
+        terminal
+            .draw(|frame| render_shell(&state, frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(text.contains("Warnings"));
     }
 }

@@ -8,6 +8,13 @@ use crate::models::{
     Screen, Subscriptions, SyncTotals, ThreadView,
 };
 
+#[path = "app_state.rs"]
+mod app_state;
+
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod app_tests;
+
 /// User action dispatched from the event loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Action {
@@ -23,10 +30,18 @@ pub enum Action {
     Quit,
     /// Append a character to the compose text editor.
     ComposeAppend(char),
+    /// Remove the last character from the compose text editor.
+    ComposeBackspace,
     /// Toggle compose preview mode.
     ComposeTogglePreview,
     /// Submit the composed post.
     ComposeSubmit,
+    /// Move the selected compose category up or down.
+    MoveComposeCategory(isize),
+    /// Toggle the subscription state for the selected category.
+    ToggleSelectedSubscription,
+    /// Generate a development identity key.
+    GenerateDevKey,
     /// Update the locally subscribed category list.
     SetSubscriptions(Subscriptions),
     /// Update the displayed categories.
@@ -127,15 +142,33 @@ impl AppState {
             Action::MoveSelection(delta) => {
                 self.move_selection(delta);
             }
-            Action::Select | Action::ComposeSubmit => {
-                // Selection/submission handling is screen-specific and performed
-                // by the caller after the reducer returns the updated state.
-            }
+            Action::Select | Action::ComposeSubmit => {}
+            Action::GenerateDevKey => Self::ignore_generate_dev_key(),
             Action::ComposeAppend(ch) => {
                 self.compose.text.push(ch);
             }
+            Action::ComposeBackspace => {
+                self.compose.text.pop();
+            }
             Action::ComposeTogglePreview => {
                 self.compose.preview = !self.compose.preview;
+            }
+            Action::MoveComposeCategory(delta) => {
+                self.move_compose_category(delta);
+            }
+            Action::ToggleSelectedSubscription => {
+                if let Some(category_id) = self.selected_category_id_for_subscription_toggle() {
+                    if let Some(index) = self
+                        .subscriptions
+                        .category_ids
+                        .iter()
+                        .position(|item| item == &category_id)
+                    {
+                        self.subscriptions.category_ids.remove(index);
+                    } else {
+                        self.subscriptions.category_ids.push(category_id);
+                    }
+                }
             }
             Action::Back => {
                 if let Some(screen) = self.screen_stack.pop() {
@@ -194,97 +227,12 @@ impl AppState {
             }
             Action::ToggleCollapse => {
                 if let Some(thread) = &mut self.thread {
-                    toggle_at_index(&mut thread.comments, self.selected_index);
+                    app_state::toggle_at_index(&mut thread.comments, self.selected_index);
                 }
             }
         }
         self
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let len = self.list_len();
-        if len == 0 {
-            self.selected_index = 0;
-            return;
-        }
-        let current = isize::try_from(self.selected_index).unwrap_or(0);
-        let len_isize = isize::try_from(len).unwrap_or(1);
-        let next = current.wrapping_add(delta).rem_euclid(len_isize);
-        self.selected_index = usize::try_from(next).unwrap_or(0);
-    }
-
-    fn list_len(&self) -> usize {
-        match self.screen {
-            Screen::Feed => self.categories.len(),
-            Screen::Subscriptions => self.subscriptions.category_ids.len(),
-            Screen::SyncStatus => self.peers.len(),
-            Screen::Thread => self
-                .thread
-                .as_ref()
-                .map_or(0, |thread| count_comments(&thread.comments)),
-            _ => 0,
-        }
-    }
-}
-
-fn count_comments(comments: &[crate::models::ThreadComment]) -> usize {
-    comments
-        .iter()
-        .map(|comment| count_comments(&comment.replies).saturating_add(1))
-        .sum::<usize>()
-}
-
-fn toggle_at_index(comments: &mut [crate::models::ThreadComment], mut index: usize) {
-    for comment in comments {
-        if index == 0 {
-            comment.collapsed = !comment.collapsed;
-            return;
-        }
-        index = index.saturating_sub(1);
-        let reply_count = count_comments(&comment.replies);
-        if index < reply_count {
-            toggle_at_index(&mut comment.replies, index);
-            return;
-        }
-        index = index.saturating_sub(reply_count);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_switches_screens_when_actions_are_applied() {
-        let state = AppState::new();
-        assert_eq!(state.screen, Screen::Feed);
-
-        let state = state.apply(Action::SetScreen(Screen::Subscriptions));
-        assert_eq!(state.screen, Screen::Subscriptions);
-        assert_eq!(state.screen_stack, vec![Screen::Feed]);
-
-        let state = state.apply(Action::Back);
-        assert_eq!(state.screen, Screen::Feed);
-        assert!(state.screen_stack.is_empty());
-    }
-
-    #[test]
-    fn quit_action_sets_should_quit() {
-        let state = AppState::new().apply(Action::Quit);
-        assert!(state.should_quit);
-    }
-
-    #[test]
-    fn acknowledging_category_warning_moves_it_to_acknowledged() {
-        let warning = FirstSeenWarning::Category {
-            category_id: "cat-1".to_owned(),
-            display_name: None,
-        };
-        let state = AppState::new()
-            .apply(Action::SetWarnings(vec![warning.clone()]))
-            .apply(Action::AcknowledgeWarning(warning));
-
-        assert!(state.warnings.is_empty());
-        assert_eq!(state.acknowledged.categories, vec!["cat-1".to_owned()]);
-    }
+    const fn ignore_generate_dev_key() {}
 }

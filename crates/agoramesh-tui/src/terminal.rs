@@ -1,7 +1,6 @@
-//! Terminal lifecycle and main event loop for the TUI.
-
 use std::io::{Stdout, stdout};
 use std::path::PathBuf;
+use std::thread::sleep;
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -12,19 +11,21 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::thread::sleep;
 
 use crate::app::{Action, AppState};
 use crate::backend::Backend;
+use crate::compose::submit_compose;
 use crate::events::map_event;
-use crate::models::{FirstSeenWarning, KeyStatus};
+use crate::first_seen::compute_warnings;
+use crate::key_ux;
+use crate::models::{KeyStatus, Screen};
 use crate::render::render_shell;
 
-/// Runs the TUI until the user quits.
-///
-/// The current implementation initializes the terminal, opens the backend, loads
-/// initial state, and runs a minimal event loop. It is intentionally simple for
-/// Phase 2 and will be extended with real backend polling in later phases.
+#[cfg(test)]
+#[path = "terminal_tests.rs"]
+mod terminal_tests;
+
+/// Run the terminal UI until exit.
 pub fn run(data_dir: Option<PathBuf>, plaintext: bool, _allow_public_bind: bool) -> Result<()> {
     let backend = Backend::open(data_dir, plaintext)?;
     let mut terminal = setup_terminal()?;
@@ -81,33 +82,9 @@ fn load_posts(
     Ok(posts)
 }
 
-fn compute_warnings(
-    categories: &[crate::models::CategorySummary],
-    peers: &[crate::models::PeerStatus],
-    acknowledged: &crate::models::AcknowledgedFirstSeen,
-) -> Vec<FirstSeenWarning> {
-    let mut warnings = Vec::new();
-    for category in categories {
-        if !acknowledged.categories.contains(&category.category_id) {
-            warnings.push(FirstSeenWarning::Category {
-                category_id: category.category_id.clone(),
-                display_name: Some(category.display_name.clone()),
-            });
-        }
-    }
-    for peer in peers {
-        if !acknowledged.peers.contains(&peer.address) {
-            warnings.push(FirstSeenWarning::Peer {
-                address: peer.address.clone(),
-            });
-        }
-    }
-    warnings
-}
-
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    _backend: &Backend,
+    backend: &Backend,
     state: &mut AppState,
 ) -> color_eyre::Result<()> {
     let tick_rate = Duration::from_millis(250);
@@ -115,12 +92,11 @@ fn run_event_loop(
         terminal.draw(|frame| render_shell(state, frame.area(), frame.buffer_mut()))?;
         if poll(tick_rate)? {
             let event = read()?;
-            if let Some(action) = map_event(&event) {
-                if action == Action::Quit {
-                    state.should_quit = true;
-                } else {
-                    let updated = state.clone().apply(action);
-                    *state = updated;
+            if let Some(action) = map_event(&event, state.screen) {
+                if let Some(next_action) = handle_action(backend, state, action)? {
+                    if matches!(next_action, Action::Quit) {
+                        state.should_quit = true;
+                    }
                 }
             }
         } else {
@@ -130,26 +106,94 @@ fn run_event_loop(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compute_warnings_lists_unacknowledged_categories_and_peers() {
-        let category = crate::models::CategorySummary {
-            object_id: "oid".to_owned(),
-            display_name: "General".to_owned(),
-            description: "General chat".to_owned(),
-            category_id: "cat-general".to_owned(),
-            created_at: chrono::Utc::now(),
-        };
-        let peer = crate::models::PeerStatus {
-            name: None,
-            address: "http://127.0.0.1:8080".to_owned(),
-            last_sync_ok: None,
-        };
-        let acknowledged = crate::models::AcknowledgedFirstSeen::default();
-        let warnings = compute_warnings(&[category], &[peer], &acknowledged);
-        assert_eq!(warnings.len(), 2);
+fn handle_action(
+    backend: &Backend,
+    state: &mut AppState,
+    action: Action,
+) -> Result<Option<Action>> {
+    match action {
+        Action::Quit => {
+            *state = state.clone().apply(Action::Quit);
+            Ok(Some(Action::Quit))
+        }
+        Action::Select => handle_select(backend, state),
+        Action::ComposeSubmit => handle_compose_submit(backend, state),
+        Action::GenerateDevKey => {
+            let key_status = key_ux::generate_dev_key(backend)?;
+            state.key_status = key_status;
+            state.status_message = Some("Development key generated".to_owned());
+            Ok(None)
+        }
+        Action::ToggleSelectedSubscription => {
+            let next = state.clone().apply(Action::ToggleSelectedSubscription);
+            backend.save_subscriptions(&next.subscriptions)?;
+            *state = next;
+            state.status_message = Some("Subscriptions updated".to_owned());
+            Ok(None)
+        }
+        other => {
+            *state = state.clone().apply(other);
+            Ok(None)
+        }
     }
+}
+
+fn handle_select(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
+    if let Some(warning) = state.warnings.first().cloned() {
+        let next = state.clone().apply(Action::AcknowledgeWarning(warning));
+        backend.save_acknowledged(&next.acknowledged)?;
+        *state = next;
+        return Ok(None);
+    }
+
+    if state.screen != Screen::Feed {
+        return Ok(None);
+    }
+
+    let Some(category) = state.categories.get(state.selected_index) else {
+        state.status_message = Some("No posts available for the selected category".to_owned());
+        return Ok(None);
+    };
+
+    let Some(post) = state
+        .posts
+        .get(&category.category_id)
+        .and_then(|posts| posts.last())
+        .cloned()
+    else {
+        state.status_message = Some("No posts available for the selected category".to_owned());
+        return Ok(None);
+    };
+
+    let thread = backend.load_thread(&post.object_id)?;
+    let next = state
+        .clone()
+        .apply(Action::SetThread(thread))
+        .apply(Action::SetScreen(Screen::Thread));
+    *state = next;
+    Ok(None)
+}
+
+fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
+    let compose = state.compose.clone();
+    let category_id = state
+        .categories
+        .get(compose.category_index)
+        .map(|category| category.category_id.clone())
+        .ok_or_else(|| crate::error::Error::Message("no category selected".to_owned()))?;
+    let post = submit_compose(backend, state, &compose).inspect_err(|error| {
+        let message = error.to_string();
+        state.compose.status = Some(message.clone());
+        state.status_message = Some(message);
+    })?;
+
+    state.posts.entry(category_id).or_default().push(post);
+    state.compose.text.clear();
+    state.compose.preview = false;
+    state.compose.status = Some("Post submitted".to_owned());
+    state.status_message = Some("Post submitted".to_owned());
+    state.screen = Screen::Feed;
+    state.screen_stack.clear();
+    state.selected_index = 0;
+    Ok(None)
 }

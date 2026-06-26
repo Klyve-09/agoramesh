@@ -47,21 +47,16 @@ cargo run --bin agoramesh-tui -- --data-dir /tmp/agoramesh-tui-data --plaintext
 Keys:
 
 - `1` Feed, `2` Subscriptions, `3` Sync status, `4` Key management
-- `n` New post, `t` Thread view
-- `↑`/`k`, `↓`/`j` move, `Enter` select/acknowledge, `Esc` back
+- `n` New post (compose)
+- `t` Open thread view for the selected category's newest post
+- `↑`/`k`, `↓`/`j` move selection
+- `Enter` acknowledge first-seen warning, or open selected post/thread
+- `Tab` toggle compose preview when in Compose
+- `Backspace` delete last character when in Compose
+- `Esc` back
+- `g` Generate dev plaintext key when in Key management (only with `--plaintext`)
+- `s` Toggle subscription for the selected category when in Feed or Subscriptions
 - `Ctrl+q` quit
-
-This milestone implements a minimal P2P text prototype. The Phase 1 completion checkpoint is recorded at:
-
-- docs/checkpoints/2026-06-25-phase1-completion.md
-
-Scope:
-
-- Canonical message signing/verification (ADR 0001, ADR 0006).
-- Verified local SQLite storage.
-- Phase 1 typed objects: `user_profile`, `category`, `post`, `comment`, `revocation_certificate`.
-- clap-only CLI: `key`, `category`, `post`, `comment`, `feed`, `peer`, `sync`, `run`.
-- Provisional direct sync over localhost HTTP/JSON between manually configured peers.
 
 Phase 1 deliberately does **not** include:
 
