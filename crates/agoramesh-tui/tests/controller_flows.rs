@@ -234,21 +234,6 @@ fn subscriptions_and_warning_acknowledgement_persist_after_reopen() {
     );
 }
 
-#[test]
-fn unknown_key_does_not_change_screen_to_feed() {
-    let (backend, _temp_dir) = temp_backend(true);
-    let mut state = AppState::new();
-    state.screen = Screen::Subscriptions;
-
-    let event = press(KeyCode::Char('x'));
-    let action = map_event(&event, state.screen);
-    if let Some(action) = action {
-        handle_action(&backend, &mut state, action).expect("handle action");
-    }
-
-    assert_eq!(state.screen, Screen::Subscriptions);
-}
-
 fn dispatch(backend: &Backend, state: &mut AppState, event: &Event) {
     let action = map_event(event, state.screen).expect("event maps to action");
     handle_action(backend, state, action).expect("handle action");

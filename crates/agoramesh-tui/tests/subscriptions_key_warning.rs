@@ -10,10 +10,15 @@
 
 use agoramesh_tui::app::{Action, AppState};
 use agoramesh_tui::backend::Backend;
+use agoramesh_tui::controller::handle_action;
+use agoramesh_tui::events::map_event;
 use agoramesh_tui::key_ux::generate_dev_key;
-use agoramesh_tui::models::{AcknowledgedFirstSeen, CategorySummary, PeerStatus, Subscriptions};
+use agoramesh_tui::models::{
+    AcknowledgedFirstSeen, CategorySummary, PeerStatus, Screen, Subscriptions,
+};
 use agoramesh_tui::subscriptions;
 use chrono::Utc;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 #[track_caller]
 fn temp_backend() -> (Backend, tempfile::TempDir) {
@@ -89,4 +94,23 @@ fn first_seen_acknowledged_persists_and_reloads() {
     let loaded = backend.load_acknowledged().expect("load");
     assert_eq!(loaded.categories, vec!["cat-a".to_owned()]);
     assert_eq!(loaded.peers, vec!["http://127.0.0.1:8080".to_owned()]);
+}
+
+#[test]
+fn unknown_key_does_not_change_screen_to_feed() {
+    let (backend, _temp_dir) = temp_backend();
+    let mut state = AppState::new();
+    state.screen = Screen::Subscriptions;
+
+    let event = press(KeyCode::Char('x'));
+    let action = map_event(&event, state.screen);
+    if let Some(action) = action {
+        handle_action(&backend, &mut state, action).expect("handle action");
+    }
+
+    assert_eq!(state.screen, Screen::Subscriptions);
+}
+
+fn press(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
 }
