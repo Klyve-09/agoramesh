@@ -39,9 +39,10 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- 2026-06-26 PR #5 code head `0bee540`: Phase 2 blocker fixes verified after
+- 2026-06-26 PR #5 code head `d02501b`: Phase 2 blocker fixes verified after
   subscription cache, compose selection, key overwrite protection, terminal
-  setup cleanup, and nonfatal key backup/restore changes.
+  setup cleanup, nonfatal key backup/restore changes, and strict restore
+  validation for locked encrypted backups.
 - Automated checks passed:
   - `cargo fmt --check`
   - `cargo check --workspace --all-targets`
@@ -57,6 +58,11 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
   - `backup_without_key_sets_status_and_does_not_exit`
   - `restore_without_backup_sets_status_and_does_not_exit`
   - `restore_corrupt_backup_sets_status_and_preserves_existing_key`
+  - `restore_structured_invalid_encrypted_backup_without_session_preserves_existing_key`
+  - `restore_encrypted_backup_with_bad_ciphertext_without_session_fails_and_preserves_existing_key`
+  - `restore_encrypted_backup_missing_required_fields_without_session_fails`
+  - `restore_failed_validation_removes_temp_file`
+  - `restore_structured_invalid_dev_plaintext_backup_preserves_existing_key`
   - `backup_write_failure_sets_status_and_does_not_exit`
   - `key_management_help_matches_event_bindings`
 - Manual TUI smoke pass in a throwaway data directory confirmed:
@@ -70,8 +76,9 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
     backup failure message;
   - Ctrl+r with no backup stays on Key Management and shows that the existing
     key was not changed;
-  - corrupt backup restore stays on Key Management and preserves the displayed
-    public key.
+  - corrupt or structured-invalid backup restore stays on Key Management,
+    preserves the displayed public key, keeps existing `identity.key` bytes, and
+    removes the temporary restore file.
 
 ## Remaining before merge
 
