@@ -9,7 +9,7 @@ use crate::backend::Backend;
 use crate::compose::submit_compose;
 use crate::first_seen::compute_warnings;
 use crate::key_ux;
-use crate::models::{CategorySummary, FeedPost, Screen};
+use crate::models::{CategorySummary, FeedFocus, FeedPost, Screen};
 
 /// Handles one UI action, including backend side effects when required.
 pub fn handle_action(
@@ -122,15 +122,23 @@ fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> Option<Acti
     };
     match submit_compose(backend, state, &compose) {
         Ok(post) => {
-            state.posts.entry(category_id).or_default().push(post);
+            let selected_category_index = visible_category_index(state, &category_id);
+            let posts = state.posts.entry(category_id).or_default();
+            posts.push(post);
+            let selected_post_index = posts.len().saturating_sub(1);
             state.compose.text.clear();
             state.compose.preview = false;
             state.compose.status = Some("Post submitted".to_owned());
             state.status_message = Some("Post submitted".to_owned());
             state.screen = Screen::Feed;
             state.screen_stack.clear();
-            state.selected_category_index = 0;
-            state.selected_post_index = 0;
+            if let Some(index) = selected_category_index {
+                state.selected_category_index = index;
+                state.selected_post_index = selected_post_index;
+                state.feed_focus = FeedFocus::Posts;
+            } else {
+                state.clamp_feed_post_index();
+            }
             None
         }
         Err(error) => {
@@ -208,10 +216,30 @@ fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Result<Option<
 }
 
 fn handle_toggle_subscription(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
-    let next = state.clone().apply(Action::ToggleSelectedSubscription);
+    let previous = state.subscriptions.category_ids.clone();
+    let mut next = state.clone().apply(Action::ToggleSelectedSubscription);
+    for category_id in &next.subscriptions.category_ids {
+        if !previous.contains(category_id) {
+            next.posts
+                .insert(category_id.clone(), backend.load_feed(category_id)?);
+        }
+    }
+    for category_id in &previous {
+        if !next.subscriptions.category_ids.contains(category_id) {
+            next.posts.remove(category_id);
+        }
+    }
     backend.save_subscriptions(&next.subscriptions)?;
     *state = next;
     state.clamp_feed_post_index();
     state.status_message = Some("Subscriptions updated".to_owned());
     Ok(None)
+}
+
+fn visible_category_index(state: &AppState, category_id: &str) -> Option<usize> {
+    state
+        .categories
+        .iter()
+        .filter(|category| state.subscriptions.category_ids.contains(&category.category_id))
+        .position(|category| category.category_id == category_id)
 }

@@ -73,6 +73,58 @@ fn compose_category_selection_posts_to_selected_scope() {
 }
 
 #[test]
+fn subscription_toggle_loads_existing_feed_without_restart() {
+    let (backend, _temp_dir) = temp_backend(true);
+    backend.generate_dev_key().expect("generate dev key");
+    let category = stored_category(&backend, "Existing");
+    backend
+        .create_post(&category.category_id, "already here", truncate(Utc::now()))
+        .expect("create existing post");
+    let mut state = AppState::new();
+    state.screen = Screen::Subscriptions;
+    state.categories = vec![category.clone()];
+
+    dispatch(&backend, &mut state, &press(KeyCode::Char(' ')));
+
+    assert_eq!(
+        state.subscriptions.category_ids,
+        vec![category.category_id.clone()]
+    );
+    assert_eq!(state.posts[&category.category_id][0].text, "already here");
+}
+
+#[test]
+fn compose_submit_selects_submitted_category_and_new_post() {
+    let (backend, _temp_dir) = temp_backend(true);
+    backend.generate_dev_key().expect("generate dev key");
+    let general = stored_category(&backend, "General");
+    let random = stored_category(&backend, "Random");
+    let existing = backend
+        .create_post(&random.category_id, "older random", truncate(Utc::now()))
+        .expect("create existing random post");
+    let mut state = AppState::new();
+    state.screen = Screen::Compose;
+    state.categories = vec![general.clone(), random.clone()];
+    state.subscriptions.category_ids = vec![general.category_id, random.category_id.clone()];
+    state
+        .posts
+        .insert(random.category_id.clone(), vec![existing]);
+
+    dispatch(&backend, &mut state, &press(KeyCode::Down));
+    for ch in "new random".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &press(KeyCode::Tab));
+    dispatch(&backend, &mut state, &press(KeyCode::Enter));
+
+    assert_eq!(state.screen, Screen::Feed);
+    assert_eq!(state.feed_focus, FeedFocus::Posts);
+    assert_eq!(state.selected_category_index, 1);
+    assert_eq!(state.selected_post_index, 1);
+    assert_eq!(state.posts[&random.category_id][1].text, "new random");
+}
+
+#[test]
 fn selected_post_enter_loads_thread() {
     let (backend, _temp_dir) = temp_backend(true);
     backend.generate_dev_key().expect("generate dev key");
