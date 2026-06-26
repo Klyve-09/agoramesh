@@ -9,7 +9,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::AppState;
-use crate::models::{FeedPost, Screen};
+use crate::models::{FeedFocus, FeedPost, Screen};
 
 /// Renders the feed screen: subscribed categories and posts for the selected one.
 pub fn render_feed(state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -35,16 +35,18 @@ fn feed_layout(area: Rect) -> FeedLayout {
 }
 
 fn render_category_list(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let items: Vec<ListItem<'_>> = state
-        .categories
+    let categories = state.visible_feed_categories();
+    let items: Vec<ListItem<'_>> = categories
         .iter()
         .enumerate()
         .map(|(index, category)| {
-            let subscribed = state
-                .subscriptions
-                .category_ids
-                .contains(&category.category_id);
-            let marker = if subscribed { "* " } else { "  " };
+            let marker = if state.feed_focus == FeedFocus::Categories
+                && Some(index) == selected_index(state)
+            {
+                "> "
+            } else {
+                "* "
+            };
             let label = format!("{marker}{}", category.display_name);
             let style = if Some(index) == selected_index(state) {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -61,13 +63,10 @@ fn render_category_list(state: &AppState, area: Rect, buf: &mut Buffer) {
 }
 
 fn render_post_list(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let selected_category = selected_index(state).and_then(|index| state.categories.get(index));
-    let posts: Vec<FeedPost> = selected_category
-        .and_then(|category| state.posts.get(&category.category_id).cloned())
-        .unwrap_or_default();
+    let posts: Vec<FeedPost> = state.selected_feed_posts().to_vec();
 
     if posts.is_empty() {
-        let empty = Paragraph::new("No posts in this category. Press 'n' to compose.")
+        let empty = Paragraph::new("No subscribed posts in this category. Press 'n' to compose or '2' to manage subscriptions.")
             .block(Block::default().borders(Borders::ALL).title("Posts"));
         empty.render(area, buf);
         return;
@@ -75,26 +74,42 @@ fn render_post_list(state: &AppState, area: Rect, buf: &mut Buffer) {
 
     let items: Vec<ListItem<'_>> = posts
         .iter()
-        .map(|post| {
+        .enumerate()
+        .map(|(index, post)| {
+            let marker =
+                if state.feed_focus == FeedFocus::Posts && index == state.selected_post_index {
+                    "> "
+                } else {
+                    "  "
+                };
             let summary = format!(
-                "{} | {} | {}",
+                "{marker}{} | {} | {}",
                 short_id(&post.object_id),
                 short_id(&post.author_id),
                 first_line(&post.text)
             );
-            ListItem::new(Line::from(summary))
+            let style = if index == state.selected_post_index {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(summary)).style(style)
         })
         .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(
+        state.selected_post_index.min(posts.len().saturating_sub(1)),
+    ));
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Posts"));
-    Widget::render(list, area, buf);
+    StatefulWidget::render(list, area, buf, &mut list_state);
 }
 
 fn selected_index(state: &AppState) -> Option<usize> {
-    if state.screen == Screen::Feed && !state.categories.is_empty() {
+    if state.screen == Screen::Feed && !state.visible_feed_categories().is_empty() {
         Some(
             state
-                .selected_index
-                .min(state.categories.len().saturating_sub(1)),
+                .selected_category_index
+                .min(state.visible_feed_categories().len().saturating_sub(1)),
         )
     } else {
         None

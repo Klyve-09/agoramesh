@@ -88,7 +88,7 @@ fn render_editor(compose: &ComposeState, area: Rect, buf: &mut Buffer) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Editor — press Tab to preview, Enter to submit");
+        .title("Editor — Enter inserts newline, Tab previews");
     Paragraph::new(display).block(block).render(area, buf);
 }
 
@@ -103,7 +103,7 @@ fn render_preview(compose: &ComposeState, area: Rect, buf: &mut Buffer) {
 }
 
 fn render_compose_help(area: Rect, buf: &mut Buffer) {
-    let help = "Tab: preview | Enter: submit | Esc: back";
+    let help = "Editor: Enter newline | Tab preview | Preview: Enter submit | Esc back";
     Paragraph::new(help)
         .style(Style::default().fg(Color::DarkGray))
         .render(area, buf);
@@ -124,7 +124,7 @@ pub fn submit_compose(
         .categories
         .get(compose.category_index)
         .ok_or_else(|| Error::Message("no category selected".to_owned()))?;
-    if compose.text.is_empty() {
+    if compose.text.trim().is_empty() {
         return Err(Error::Message("post text is empty".to_owned()));
     }
     let created_at = truncate_to_seconds(Utc::now())
@@ -180,7 +180,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(text.contains("Preview"));
-        assert!(!text.contains("Editor"));
+        assert!(text.contains("Preview only"));
     }
 
     #[test]

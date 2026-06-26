@@ -13,7 +13,7 @@ use crate::models::{Screen, SyncTotals};
 
 /// Renders the full application shell into the provided buffer area.
 pub fn render_shell(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let layout = shell_layout(area);
+    let layout = shell_layout(state, area);
     render_header(state, layout.header, buf);
     render_first_seen_warnings(state, layout.warnings, buf);
     render_body(state, layout.body, buf);
@@ -39,23 +39,31 @@ pub fn render_body_for_screen(
 
 fn render_subscriptions(state: &AppState, area: Rect, buf: &mut Buffer) {
     let lines: Vec<Line<'_>> = state
-        .subscriptions
-        .category_ids
+        .categories
         .iter()
         .enumerate()
-        .map(|(index, category_id)| {
+        .map(|(index, category)| {
             let selected = state.screen == Screen::Subscriptions && index == state.selected_index;
+            let subscribed = state
+                .subscriptions
+                .category_ids
+                .contains(&category.category_id);
+            let marker = if subscribed { "[x]" } else { "[ ]" };
+            let label = format!(
+                "{marker} {} ({})",
+                category.display_name, category.category_id
+            );
             let style = if selected {
                 Style::default().bg(Color::DarkGray)
             } else {
                 Style::default()
             };
-            Line::from(Span::styled(category_id.clone(), style))
+            Line::from(Span::styled(label, style))
         })
         .collect();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Subscriptions");
+        .title("Subscriptions — Space/Enter toggles, all known categories shown");
     Paragraph::new(lines).block(block).render(area, buf);
 }
 
@@ -66,12 +74,19 @@ struct ShellLayout {
     footer: Rect,
 }
 
-fn shell_layout(area: Rect) -> ShellLayout {
+fn shell_layout(state: &AppState, area: Rect) -> ShellLayout {
+    let warning_height = if state.warnings.is_empty() || area.height <= 4 {
+        0
+    } else {
+        u16::try_from(state.warnings.len().saturating_add(1))
+            .unwrap_or(3)
+            .min(4)
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(2),
+            Constraint::Length(warning_height),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -95,7 +110,8 @@ fn render_body(state: &AppState, area: Rect, buf: &mut Buffer) {
 }
 
 fn render_footer(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let help = "1:Feed 2:Subs 3:Sync 4:Key n:New t:Thread Up/Down:Move Esc:Back Ctrl+q:Quit";
+    let help =
+        "1:Feed 2:Subs 3:Sync 4:Key n:New Tab:Focus a:Ack Enter:Open/Submit Esc:Back Ctrl+q:Quit";
     let footer_text = state
         .status_message
         .as_ref()
@@ -135,7 +151,7 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("AgoraMesh"));
         assert!(text.contains("Feed"));
-        assert!(text.contains("Ctrl+q:Quit"));
+        assert!(text.contains("Tab:Focus"));
     }
 
     #[test]
@@ -155,6 +171,6 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("Warnings"));
+        assert!(text.contains("First time seeing peer"));
     }
 }
