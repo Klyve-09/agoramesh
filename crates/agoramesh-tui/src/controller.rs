@@ -7,6 +7,7 @@ use color_eyre::Result;
 use crate::app::{Action, AppState};
 use crate::backend::Backend;
 use crate::compose::submit_compose;
+use crate::error::Error;
 use crate::first_seen::compute_warnings;
 use crate::key_ux;
 use crate::models::{CategorySummary, FeedFocus, FeedPost, Screen};
@@ -31,8 +32,8 @@ pub fn handle_action(
         Action::GenerateDevKey => Ok(handle_generate_dev_key(backend, state)),
         Action::GenerateEncryptedKey => Ok(handle_generate_encrypted_key(backend, state)),
         Action::UnlockKey => Ok(handle_unlock_key(backend, state)),
-        Action::BackupKey => handle_backup_key(backend, state),
-        Action::RestoreKey => handle_restore_key(backend, state),
+        Action::BackupKey => Ok(handle_backup_key(backend, state)),
+        Action::RestoreKey => Ok(handle_restore_key(backend, state)),
         Action::ToggleSelectedSubscription => handle_toggle_subscription(backend, state),
         other => {
             *state = state.clone().apply(other);
@@ -206,20 +207,48 @@ fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Option<Action> 
     None
 }
 
-fn handle_backup_key(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
-    let path = backend.backup_key()?;
-    let message = format!("Key backup written to {}", path.display());
-    state.key_input.status = Some(message.clone());
-    state.status_message = Some(message);
-    Ok(None)
+fn handle_backup_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
+    match backend.backup_key() {
+        Ok(path) => {
+            let message = format!("Key backup written to {}", path.display());
+            state.key_input.status = Some(message.clone());
+            state.status_message = Some(message);
+        }
+        Err(error) => set_key_error_status(state, backup_error_message(&error)),
+    }
+    None
 }
 
-fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
-    backend.restore_key_from_backup()?;
-    state.key_status = backend.key_status(false)?;
-    state.key_input.status = Some("Key restored from backup".to_owned());
-    state.status_message = Some("Key restored from backup".to_owned());
-    Ok(None)
+fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
+    match backend.restore_key_from_backup() {
+        Ok(()) => match backend.key_status(false) {
+            Ok(status) => {
+                let message = match &status {
+                    crate::models::KeyStatus::Present { public_key_hex } => {
+                        format!("Key restored from backup: {public_key_hex}")
+                    }
+                    crate::models::KeyStatus::Locked { public_key_hex } => {
+                        let public_key = public_key_hex
+                            .as_deref()
+                            .unwrap_or("encrypted key restored");
+                        format!("Key restored from backup: {public_key}")
+                    }
+                    crate::models::KeyStatus::Missing => "Key restored from backup".to_owned(),
+                };
+                state.key_status = status;
+                state.key_input.status = Some(message.clone());
+                state.status_message = Some(message);
+            }
+            Err(error) => set_key_error_status(
+                state,
+                format!(
+                    "Restore failed: key status could not be refreshed ({error}). Existing key was not changed."
+                ),
+            ),
+        },
+        Err(error) => set_key_error_status(state, restore_error_message(&error)),
+    }
+    None
 }
 
 fn handle_toggle_subscription(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
@@ -264,4 +293,40 @@ fn set_key_error_status(state: &mut AppState, message: String) {
     };
     state.key_input.status = Some(message.clone());
     state.status_message = Some(message);
+}
+
+fn backup_error_message(error: &Error) -> String {
+    match error {
+        Error::StateIo(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            "Backup failed: no identity key exists yet. Generate or restore a key first.".to_owned()
+        }
+        Error::StateIo(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+            "Backup failed: backup path is not writable. No key was changed.".to_owned()
+        }
+        Error::StateIo(_) => {
+            "Backup failed: backup file could not be written. No key was changed.".to_owned()
+        }
+        _ => format!("Backup failed: {error}. No key was changed."),
+    }
+}
+
+fn restore_error_message(error: &Error) -> String {
+    match error {
+        Error::StateIo(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            "Restore failed: backup file is missing or unreadable. Existing key was not changed."
+                .to_owned()
+        }
+        Error::StateIo(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+            "Restore failed: key path is not writable. Existing key was not changed.".to_owned()
+        }
+        Error::StateIo(_) => {
+            "Restore failed: backup file could not be read or written. Existing key was not changed."
+                .to_owned()
+        }
+        Error::StateJson(_) | Error::Key(_) => {
+            "Restore failed: backup file is not a valid identity key. Existing key was not changed."
+                .to_owned()
+        }
+        _ => format!("Restore failed: {error}. Existing key was not changed."),
+    }
 }

@@ -10,7 +10,7 @@
 
 use agoramesh_core::objects::{ParentKind, category, comment, post};
 use agoramesh_store::Store;
-use agoramesh_tui::app::AppState;
+use agoramesh_tui::app::{Action, AppState};
 use agoramesh_tui::backend::Backend;
 use agoramesh_tui::controller::handle_action;
 use agoramesh_tui::events::map_event;
@@ -307,6 +307,86 @@ fn dev_plaintext_key_generate_does_not_overwrite_existing_key() {
 }
 
 #[test]
+fn backup_without_key_sets_status_and_does_not_exit() {
+    let (backend, temp_dir) = temp_backend(true);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+
+    let result = handle_action(&backend, &mut state, Action::BackupKey);
+
+    assert!(result.is_ok());
+    assert_eq!(state.screen, Screen::KeyManagement);
+    assert_status_contains(&state, "Backup failed");
+    assert!(!temp_dir.path().join("identity.key").exists());
+}
+
+#[test]
+fn restore_without_backup_sets_status_and_does_not_exit() {
+    let (backend, _temp_dir) = temp_backend(true);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('d')));
+    let existing_public_key = public_key_hex(&state.key_status);
+
+    let action = map_event(&ctrl(KeyCode::Char('r')), state.screen).expect("restore maps");
+    let result = handle_action(&backend, &mut state, action);
+
+    assert!(result.is_ok());
+    assert_eq!(state.screen, Screen::KeyManagement);
+    assert_status_contains(&state, "Restore failed");
+    assert_eq!(public_key_hex(&state.key_status), existing_public_key);
+    assert_eq!(
+        public_key_hex(&backend.key_status(false).expect("key status")),
+        existing_public_key
+    );
+}
+
+#[test]
+fn restore_corrupt_backup_sets_status_and_preserves_existing_key() {
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    std::fs::write(
+        temp_dir.path().join("identity.key.backup"),
+        b"not a key file",
+    )
+    .expect("write corrupt backup");
+
+    let result = handle_action(&backend, &mut state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(state.screen, Screen::KeyManagement);
+    assert_status_contains(&state, "Restore failed");
+    assert_eq!(public_key_hex(&state.key_status), existing_public_key);
+    assert_eq!(
+        public_key_hex(&backend.key_status(false).expect("key status")),
+        existing_public_key
+    );
+}
+
+#[test]
+fn backup_write_failure_sets_status_and_does_not_exit() {
+    let (backend, temp_dir) = temp_backend(true);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('d')));
+    let backup_path = temp_dir.path().join("identity.key.backup");
+    std::fs::create_dir(&backup_path).expect("create backup path collision");
+
+    let result = handle_action(&backend, &mut state, Action::BackupKey);
+
+    assert!(result.is_ok());
+    assert_eq!(state.screen, Screen::KeyManagement);
+    assert_status_contains(&state, "Backup failed");
+    assert!(temp_dir.path().join("identity.key").exists());
+}
+
+#[test]
 fn unknown_key_does_not_change_screen_to_feed() {
     let (backend, _temp_dir) = temp_backend(true);
     let mut state = AppState::new();
@@ -391,4 +471,16 @@ fn public_key_hex(status: &KeyStatus) -> String {
             panic!("key status has no public key: {status:?}")
         }
     }
+}
+
+fn assert_status_contains(state: &AppState, needle: &str) {
+    assert!(
+        state
+            .status_message
+            .as_deref()
+            .is_some_and(|message| message.contains(needle)),
+        "status {:?} did not contain {needle:?}",
+        state.status_message
+    );
+    assert_eq!(state.key_input.status, state.status_message);
 }

@@ -1,6 +1,7 @@
 //! Data gateway between the TUI and the underlying `AgoraMesh` crates.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -205,7 +206,29 @@ impl Backend {
     /// Restores the current key file from the default backup copy.
     pub fn restore_key_from_backup(&self) -> Result<(), Error> {
         let bytes = std::fs::read(self.backup_key_path()).map_err(Error::StateIo)?;
-        write_atomic(&self.config.key_path(), &bytes)
+        let target = self.config.key_path();
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(Error::StateIo)?;
+        }
+        let tmp_path = target.with_extension("restore.tmp");
+        write_temp_file(&tmp_path, &bytes)?;
+        self.validate_restored_key(&tmp_path)?;
+        std::fs::rename(tmp_path, target).map_err(Error::StateIo)
+    }
+
+    fn validate_restored_key(&self, path: &Path) -> Result<(), Error> {
+        if self.plaintext {
+            Keyring::new(path).dev_plaintext_load()?;
+            return Ok(());
+        }
+
+        if let Some(passphrase) = self.session_passphrase()? {
+            Keyring::new(path).load(&passphrase)?;
+            return Ok(());
+        }
+
+        encrypted_public_key(path)?;
+        Ok(())
     }
 
     fn load_keypair(&self) -> Result<Keypair, Error> {
@@ -404,8 +427,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         std::fs::create_dir_all(parent).map_err(Error::StateIo)?;
     }
     let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, bytes).map_err(Error::StateIo)?;
+    write_temp_file(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, path).map_err(Error::StateIo)
+}
+
+fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let mut file = std::fs::File::create(path).map_err(Error::StateIo)?;
+    file.write_all(bytes).map_err(Error::StateIo)?;
+    file.sync_all().map_err(Error::StateIo)
 }
 
 fn encrypted_public_key(path: &Path) -> Result<Option<String>, Error> {
