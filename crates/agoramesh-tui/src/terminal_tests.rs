@@ -150,6 +150,56 @@ fn handle_action_select_on_feed_without_posts_sets_status_message() {
     );
 }
 
+#[test]
+fn terminal_setup_cleanup_attempts_all_completed_steps_after_failure() {
+    let mut cleanup = RecordingSetupCleanup::default();
+    let progress = TerminalSetupProgress {
+        raw_mode: true,
+        alternate_screen: true,
+        mouse_capture: true,
+    };
+
+    cleanup_terminal_setup(&progress, &mut cleanup).expect("cleanup succeeds");
+
+    assert_eq!(
+        cleanup.calls,
+        vec![
+            CleanupCall::DisableMouseCapture,
+            CleanupCall::LeaveAlternateScreen,
+            CleanupCall::DisableRawMode,
+        ]
+    );
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanupCall {
+    DisableMouseCapture,
+    LeaveAlternateScreen,
+    DisableRawMode,
+}
+
+#[derive(Default)]
+struct RecordingSetupCleanup {
+    calls: Vec<CleanupCall>,
+}
+
+impl TerminalSetupCleanup for RecordingSetupCleanup {
+    fn disable_mouse_capture(&mut self) -> std::io::Result<()> {
+        self.calls.push(CleanupCall::DisableMouseCapture);
+        Ok(())
+    }
+
+    fn leave_alternate_screen(&mut self) -> std::io::Result<()> {
+        self.calls.push(CleanupCall::LeaveAlternateScreen);
+        Ok(())
+    }
+
+    fn disable_raw_mode(&mut self) -> std::io::Result<()> {
+        self.calls.push(CleanupCall::DisableRawMode);
+        Ok(())
+    }
+}
+
 fn backend_fixture(plaintext: bool) -> (Backend, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().expect("create tempdir");
     let backend =

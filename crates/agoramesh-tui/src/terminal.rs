@@ -36,6 +36,27 @@ struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
+#[derive(Default)]
+struct TerminalSetupProgress {
+    raw_mode: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+}
+
+#[derive(Default)]
+struct TerminalSetupGuard {
+    progress: TerminalSetupProgress,
+    active: bool,
+}
+
+trait TerminalSetupCleanup {
+    fn disable_mouse_capture(&mut self) -> std::io::Result<()>;
+    fn leave_alternate_screen(&mut self) -> std::io::Result<()>;
+    fn disable_raw_mode(&mut self) -> std::io::Result<()>;
+}
+
+struct StdoutSetupCleanup;
+
 impl TerminalGuard {
     fn enter() -> Result<Self> {
         let terminal = setup_terminal()?;
@@ -53,20 +74,80 @@ impl Drop for TerminalGuard {
     }
 }
 
+impl TerminalSetupGuard {
+    fn new() -> Self {
+        Self {
+            progress: TerminalSetupProgress::default(),
+            active: true,
+        }
+    }
+
+    const fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TerminalSetupGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let mut cleanup = StdoutSetupCleanup;
+            let _ = cleanup_terminal_setup(&self.progress, &mut cleanup);
+        }
+    }
+}
+
+impl TerminalSetupCleanup for StdoutSetupCleanup {
+    fn disable_mouse_capture(&mut self) -> std::io::Result<()> {
+        stdout().execute(DisableMouseCapture).map(|_stdout| ())
+    }
+
+    fn leave_alternate_screen(&mut self) -> std::io::Result<()> {
+        stdout().execute(LeaveAlternateScreen).map(|_stdout| ())
+    }
+
+    fn disable_raw_mode(&mut self) -> std::io::Result<()> {
+        disable_raw_mode()
+    }
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    let mut setup_guard = TerminalSetupGuard::new();
     enable_raw_mode()?;
+    setup_guard.progress.raw_mode = true;
     let mut stdout = stdout();
-    if let Err(error) = stdout.execute(EnterAlternateScreen) {
-        let _ = disable_raw_mode();
-        return Err(error.into());
-    }
-    if let Err(error) = stdout.execute(EnableMouseCapture) {
-        let _ = stdout.execute(LeaveAlternateScreen);
-        let _ = disable_raw_mode();
-        return Err(error.into());
-    }
+    stdout.execute(EnterAlternateScreen)?;
+    setup_guard.progress.alternate_screen = true;
+    stdout.execute(EnableMouseCapture)?;
+    setup_guard.progress.mouse_capture = true;
     let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend).map_err(Into::into)
+    let terminal = Terminal::new(backend)?;
+    setup_guard.disarm();
+    Ok(terminal)
+}
+
+fn cleanup_terminal_setup(
+    progress: &TerminalSetupProgress,
+    cleanup: &mut impl TerminalSetupCleanup,
+) -> std::io::Result<()> {
+    let mut first_error = None;
+    if progress.mouse_capture {
+        record_cleanup_result(cleanup.disable_mouse_capture(), &mut first_error);
+    }
+    if progress.alternate_screen {
+        record_cleanup_result(cleanup.leave_alternate_screen(), &mut first_error);
+    }
+    if progress.raw_mode {
+        record_cleanup_result(cleanup.disable_raw_mode(), &mut first_error);
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn record_cleanup_result(result: std::io::Result<()>, first_error: &mut Option<std::io::Error>) {
+    if let Err(error) = result {
+        if first_error.is_none() {
+            *first_error = Some(error);
+        }
+    }
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
