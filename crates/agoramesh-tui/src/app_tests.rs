@@ -69,6 +69,7 @@ fn compose_actions_update_local_editor_state() {
 #[test]
 fn toggling_selected_subscription_adds_and_removes_the_selected_category() {
     let mut state = AppState::new();
+    state.screen = Screen::Subscriptions;
     state.categories = vec![CategorySummary {
         object_id: "oid-1".to_owned(),
         display_name: "General".to_owned(),

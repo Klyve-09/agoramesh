@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use crate::compose::ComposeState;
 use crate::models::{
-    AcknowledgedFirstSeen, CategorySummary, FeedPost, FirstSeenWarning, KeyStatus, PeerStatus,
-    Screen, Subscriptions, SyncTotals, ThreadView,
+    AcknowledgedFirstSeen, CategorySummary, FeedFocus, FeedPost, FirstSeenWarning, KeyInputState,
+    KeyStatus, PeerStatus, Screen, Subscriptions, SyncTotals, ThreadView,
 };
 
 #[path = "app_state.rs"]
@@ -24,6 +24,10 @@ pub enum Action {
     MoveSelection(isize),
     /// Select the highlighted item.
     Select,
+    /// Do nothing for intentionally ignored input.
+    Noop,
+    /// Switch feed movement between categories and posts.
+    ToggleFeedFocus,
     /// Go back to the previous screen.
     Back,
     /// Quit the application.
@@ -42,6 +46,18 @@ pub enum Action {
     ToggleSelectedSubscription,
     /// Generate a development identity key.
     GenerateDevKey,
+    /// Append a character to the key passphrase prompt.
+    KeyAppend(char),
+    /// Remove a character from the key passphrase prompt.
+    KeyBackspace,
+    /// Unlock an encrypted identity key with the typed passphrase.
+    UnlockKey,
+    /// Generate an encrypted identity key with the typed passphrase.
+    GenerateEncryptedKey,
+    /// Backup the current key file.
+    BackupKey,
+    /// Restore the key file from the default backup.
+    RestoreKey,
     /// Update the locally subscribed category list.
     SetSubscriptions(Subscriptions),
     /// Update the displayed categories.
@@ -64,6 +80,8 @@ pub enum Action {
     SetThread(ThreadView),
     /// Toggle collapse on the selected thread comment.
     ToggleCollapse,
+    /// Acknowledge the currently displayed first-seen warning.
+    AcknowledgeCurrentWarning,
 }
 
 /// Central application state for the TUI.
@@ -75,6 +93,12 @@ pub struct AppState {
     pub screen_stack: Vec<Screen>,
     /// Index of the selected list item on the current screen.
     pub selected_index: usize,
+    /// Index of the selected feed category among subscribed feed categories.
+    pub selected_category_index: usize,
+    /// Index of the selected post within the selected feed category.
+    pub selected_post_index: usize,
+    /// Currently focused feed pane.
+    pub feed_focus: FeedFocus,
     /// Locally subscribed category IDs.
     pub subscriptions: Subscriptions,
     /// Known categories loaded from the store.
@@ -87,6 +111,8 @@ pub struct AppState {
     pub posts: HashMap<String, Vec<FeedPost>>,
     /// Key management panel state.
     pub key_status: KeyStatus,
+    /// Key-management passphrase/action state.
+    pub key_input: KeyInputState,
     /// Active first-seen warnings.
     pub warnings: Vec<FirstSeenWarning>,
     /// Acknowledged first-seen values.
@@ -107,12 +133,16 @@ impl Default for AppState {
             screen: Screen::Feed,
             screen_stack: Vec::new(),
             selected_index: 0,
+            selected_category_index: 0,
+            selected_post_index: 0,
+            feed_focus: FeedFocus::Categories,
             subscriptions: Subscriptions::default(),
             categories: Vec::new(),
             peers: Vec::new(),
             sync_totals: SyncTotals::default(),
             posts: HashMap::new(),
             key_status: KeyStatus::Missing,
+            key_input: KeyInputState::default(),
             warnings: Vec::new(),
             acknowledged: AcknowledgedFirstSeen::default(),
             compose: ComposeState::default(),
@@ -139,11 +169,30 @@ impl AppState {
                 self.screen = screen;
                 self.selected_index = 0;
             }
+            Action::Noop
+            | Action::Select
+            | Action::ComposeSubmit
+            | Action::UnlockKey
+            | Action::GenerateEncryptedKey
+            | Action::BackupKey
+            | Action::RestoreKey
+            | Action::AcknowledgeCurrentWarning => {}
+            Action::ToggleFeedFocus => {
+                self.feed_focus = match self.feed_focus {
+                    FeedFocus::Categories => FeedFocus::Posts,
+                    FeedFocus::Posts => FeedFocus::Categories,
+                };
+            }
             Action::MoveSelection(delta) => {
                 self.move_selection(delta);
             }
-            Action::Select | Action::ComposeSubmit => {}
             Action::GenerateDevKey => Self::ignore_generate_dev_key(),
+            Action::KeyAppend(ch) => {
+                self.key_input.passphrase.push(ch);
+            }
+            Action::KeyBackspace => {
+                self.key_input.passphrase.pop();
+            }
             Action::ComposeAppend(ch) => {
                 self.compose.text.push(ch);
             }
@@ -157,71 +206,25 @@ impl AppState {
                 self.move_compose_category(delta);
             }
             Action::ToggleSelectedSubscription => {
-                if let Some(category_id) = self.selected_category_id_for_subscription_toggle() {
-                    if let Some(index) = self
-                        .subscriptions
-                        .category_ids
-                        .iter()
-                        .position(|item| item == &category_id)
-                    {
-                        self.subscriptions.category_ids.remove(index);
-                    } else {
-                        self.subscriptions.category_ids.push(category_id);
-                    }
-                }
+                self.toggle_selected_subscription();
             }
             Action::Back => {
-                if let Some(screen) = self.screen_stack.pop() {
-                    self.screen = screen;
-                    self.selected_index = 0;
-                }
+                self.go_back();
             }
             Action::Quit => {
                 self.should_quit = true;
             }
-            Action::SetSubscriptions(subscriptions) => {
-                self.subscriptions = subscriptions;
-            }
-            Action::SetCategories(categories) => {
-                let new_index = self.selected_index.min(categories.len().saturating_sub(1));
-                self.categories = categories;
-                self.selected_index = new_index;
-            }
-            Action::SetPeers(peers) => {
-                let new_index = self.selected_index.min(peers.len().saturating_sub(1));
-                self.peers = peers;
-                self.selected_index = new_index;
-            }
-            Action::SetSyncTotals(totals) => {
-                self.sync_totals = totals;
-            }
-            Action::SetPosts(posts) => {
-                self.posts = posts;
-            }
-            Action::SetKeyStatus(status) => {
-                self.key_status = status;
-            }
-            Action::SetWarnings(warnings) => {
-                self.warnings = warnings;
-            }
+            Action::SetSubscriptions(subscriptions) => self.subscriptions = subscriptions,
+            Action::SetCategories(categories) => self.set_categories(categories),
+            Action::SetPeers(peers) => self.set_peers(peers),
+            Action::SetSyncTotals(totals) => self.sync_totals = totals,
+            Action::SetPosts(posts) => self.set_posts(posts),
+            Action::SetKeyStatus(status) => self.key_status = status,
+            Action::SetWarnings(warnings) => self.warnings = warnings,
             Action::AcknowledgeWarning(warning) => {
-                self.warnings.retain(|item| item != &warning);
-                match warning {
-                    FirstSeenWarning::Category { category_id, .. } => {
-                        if !self.acknowledged.categories.contains(&category_id) {
-                            self.acknowledged.categories.push(category_id);
-                        }
-                    }
-                    FirstSeenWarning::Peer { address } => {
-                        if !self.acknowledged.peers.contains(&address) {
-                            self.acknowledged.peers.push(address);
-                        }
-                    }
-                }
+                self.acknowledge_warning(warning);
             }
-            Action::SetAcknowledged(acknowledged) => {
-                self.acknowledged = acknowledged;
-            }
+            Action::SetAcknowledged(acknowledged) => self.acknowledged = acknowledged,
             Action::SetThread(thread) => {
                 self.thread = Some(thread);
             }
@@ -235,4 +238,61 @@ impl AppState {
     }
 
     const fn ignore_generate_dev_key() {}
+
+    fn toggle_selected_subscription(&mut self) {
+        let Some(category_id) = self.selected_category_id_for_subscription_toggle() else {
+            return;
+        };
+        if let Some(index) = self
+            .subscriptions
+            .category_ids
+            .iter()
+            .position(|item| item == &category_id)
+        {
+            self.subscriptions.category_ids.remove(index);
+        } else {
+            self.subscriptions.category_ids.push(category_id);
+        }
+    }
+
+    fn go_back(&mut self) {
+        if let Some(screen) = self.screen_stack.pop() {
+            self.screen = screen;
+            self.selected_index = 0;
+        }
+    }
+
+    fn set_categories(&mut self, categories: Vec<CategorySummary>) {
+        let new_index = self.selected_index.min(categories.len().saturating_sub(1));
+        self.categories = categories;
+        self.selected_index = new_index;
+        self.clamp_feed_post_index();
+    }
+
+    fn set_peers(&mut self, peers: Vec<PeerStatus>) {
+        let new_index = self.selected_index.min(peers.len().saturating_sub(1));
+        self.peers = peers;
+        self.selected_index = new_index;
+    }
+
+    fn set_posts(&mut self, posts: HashMap<String, Vec<FeedPost>>) {
+        self.posts = posts;
+        self.clamp_feed_post_index();
+    }
+
+    fn acknowledge_warning(&mut self, warning: FirstSeenWarning) {
+        self.warnings.retain(|item| item != &warning);
+        match warning {
+            FirstSeenWarning::Category { category_id, .. } => {
+                if !self.acknowledged.categories.contains(&category_id) {
+                    self.acknowledged.categories.push(category_id);
+                }
+            }
+            FirstSeenWarning::Peer { address } => {
+                if !self.acknowledged.peers.contains(&address) {
+                    self.acknowledged.peers.push(address);
+                }
+            }
+        }
+    }
 }

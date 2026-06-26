@@ -108,11 +108,35 @@ pub struct SyncTotals {
 pub enum KeyStatus {
     /// No key file exists; the user must generate one.
     Missing,
+    /// An encrypted key exists but has not been unlocked in this TUI session.
+    Locked {
+        /// Hex-encoded Ed25519 public key when available from key metadata.
+        public_key_hex: Option<String>,
+    },
     /// A key exists; show its public identity and backup hints.
     Present {
         /// Hex-encoded Ed25519 public key.
         public_key_hex: String,
     },
+}
+
+/// Which side of the feed is currently controlled by movement keys.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FeedFocus {
+    /// Movement keys change the selected category.
+    #[default]
+    Categories,
+    /// Movement keys change the selected post in the selected category.
+    Posts,
+}
+
+/// Key-management interaction state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct KeyInputState {
+    /// Passphrase currently typed by the user. It is masked when rendered.
+    pub passphrase: String,
+    /// Optional last key-management action status.
+    pub status: Option<String>,
 }
 
 /// A warning that a category or peer is seen for the first time.
