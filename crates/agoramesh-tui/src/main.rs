@@ -16,17 +16,17 @@ struct Args {
     data_dir: Option<PathBuf>,
 
     /// Run in plaintext dev key mode (do not use for real identities).
-    #[arg(long, env = "AGORAMESH_PLAINTEXT")]
-    plaintext: bool,
-
-    /// Allow the TUI background sync server to bind to a public address.
-    #[arg(long, env = "AGORAMESH_ALLOW_PUBLIC_BIND")]
-    allow_public_bind: bool,
+    #[arg(
+        long,
+        alias = "plaintext",
+        env = "AGORAMESH_DEV_INSECURE_PLAINTEXT_KEY"
+    )]
+    dev_insecure_plaintext_key: bool,
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args = Args::parse();
-    run(args.data_dir, args.plaintext, args.allow_public_bind)?;
+    run(args.data_dir, args.dev_insecure_plaintext_key)?;
     Ok(())
 }
