@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 2 minimal TUI client implementation is complete and verified.
+Phase 2 minimal TUI client implementation is in progress.
 
 ## Scope
 
@@ -19,36 +19,33 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 ## Completed features
 
 - New workspace crate `crates/agoramesh-tui`
-- Binary target `agoramesh-tui` with `--data-dir`, `--plaintext`, and `--allow-public-bind` flags
-- Crossterm + ratatui event loop and terminal lifecycle
-- Central `AppState` reducer with `Action` dispatch
+- Binary target `agoramesh-tui` with `--data-dir` and `--dev-insecure-plaintext-key` flags
+- Crossterm + ratatui event loop with Drop-based terminal restoration guard
+- Central `AppState` reducer plus backend-backed controller/effect dispatch
 - Backend gateway over `agoramesh-store`/`agoramesh-cli`/`agoramesh-core`
-- Feed screen reading posts from a per-category cache populated on startup
-- Compose screen with live preview and signed post submission
+- Feed screen reading subscribed category posts from a per-category cache populated on startup
+- Compose screen with Unicode text input, multiline editor, preview, and signed post submission
 - Thread screen rendering root post and nested comment tree
-- Subscription persistence in `subscriptions.json`
+- Subscription management over all known categories with persistence in `subscriptions.json`
 - First-seen acknowledgement persistence in `seen.json`
 - First-seen warnings computed from categories and peers
-- Key status panel with dev plaintext key generation helper
-- Sync status panel showing last sync totals
-- 20 unit tests + 7 integration tests in the TUI crate
+- Key status panel with encrypted key generation/unlock plus backup/restore; dev plaintext is explicit only
+- Sync status panel showing manually configured peers and making the absence of background sync explicit
+- Event/controller/backend/persistence integration coverage for compose, subscriptions, warnings, keys, and thread loading
 
 ## Bug fix included
 
-`crates/agoramesh-store/src/db.rs`: `created_at` metadata was written with the `+00:00` offset instead of the canonical `Z` suffix, causing metadata verification to fail on read. The fix truncates timestamps to seconds and uses `to_rfc3339_opts(SecondsFormat::Secs, true)` so SQLite metadata matches the signed payload.
+`crates/agoramesh-store/src/db.rs`: new writes use a canonical `Z` suffix for SQLite `created_at` metadata, while old Phase 1 rows with `+00:00` remain readable through RFC3339 parsed-instant comparison. The migration path does not rewrite signed payloads or object IDs.
 
 ## Verification
 
-- `cargo fmt --check`
-- `cargo clippy --workspace --all-targets`
-- `cargo test --workspace --all-targets`
+- In progress; latest checks must be recorded in the PR before review.
 
 ## Remaining before merge
 
-- User review and approval
-- Atomic commit with lore-format message
-- Push `phase-2/minimal-tui-client` branch
-- Open a draft PR against `Klyve-09/agoramesh:main`
+- Full verification: `cargo fmt --check`, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`, `./dev ci`
+- Manual TUI UX pass by a user before declaring Phase 2 complete
+- Any feedback-driven protocol/UI corrections from that UX pass
 
 ## Deliberately excluded from Phase 2
 
