@@ -29,7 +29,7 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 - Subscription management over all known categories with persistence in `subscriptions.json`
 - First-seen acknowledgement persistence in `seen.json`
 - First-seen warnings computed from categories and peers
-- Key status panel with encrypted key generation/unlock plus backup/restore; dev plaintext is explicit only
+- Key status panel with encrypted key generation/unlock plus nonfatal backup/restore status handling; dev plaintext is explicit only
 - Sync status panel showing manually configured peers and making the absence of background sync explicit
 - Event/controller/backend/persistence integration coverage for compose, subscriptions, warnings, keys, and thread loading
 
@@ -39,9 +39,9 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- 2026-06-26 PR #5 head `2b5bf96`: Phase 2 blocker fixes verified after the
-  subscription cache, compose selection, key overwrite protection, and terminal
-  setup cleanup changes.
+- 2026-06-26 PR #5 code head `0585e81`: Phase 2 blocker fixes verified after
+  subscription cache, compose selection, key overwrite protection, terminal
+  setup cleanup, and nonfatal key backup/restore changes.
 - Automated checks passed:
   - `cargo fmt --check`
   - `cargo check --workspace --all-targets`
@@ -54,6 +54,11 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
   - `encrypted_key_generate_does_not_overwrite_existing_key`
   - `dev_plaintext_key_generate_does_not_overwrite_existing_key`
   - `terminal_setup_cleanup_attempts_all_completed_steps_after_failure`
+  - `backup_without_key_sets_status_and_does_not_exit`
+  - `restore_without_backup_sets_status_and_does_not_exit`
+  - `restore_corrupt_backup_sets_status_and_preserves_existing_key`
+  - `backup_write_failure_sets_status_and_does_not_exit`
+  - `key_management_help_matches_event_bindings`
 - Manual TUI smoke pass in a throwaway data directory confirmed:
   - subscribing to a category with an existing post makes that post visible in
     Feed without restarting;
@@ -61,10 +66,15 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
     selected in the posts pane;
   - Ctrl+d on an existing plaintext dev key leaves the public key intact and
     shows “Key overwrite disabled; use backup/restore instead”.
+  - Ctrl+b with no encrypted key stays on Key Management and shows a nonfatal
+    backup failure message;
+  - Ctrl+r with no backup stays on Key Management and shows that the existing
+    key was not changed;
+  - corrupt backup restore stays on Key Management and preserves the displayed
+    public key.
 
 ## Remaining before merge
 
-- Full verification: `cargo fmt --check`, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets`, `./dev ci`
 - Manual TUI UX pass by a user before declaring Phase 2 complete
 - Any feedback-driven protocol/UI corrections from that UX pass
 
