@@ -39,7 +39,7 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- 2026-06-26 PR #5 code head `d02501b`: Phase 2 blocker fixes verified after
+- 2026-06-26 PR #5 code head `e14ed9a`: Phase 2 blocker fixes verified after
   subscription cache, compose selection, key overwrite protection, terminal
   setup cleanup, nonfatal key backup/restore changes, and strict restore
   validation for locked encrypted backups.
@@ -60,6 +60,7 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
   - `restore_corrupt_backup_sets_status_and_preserves_existing_key`
   - `restore_structured_invalid_encrypted_backup_without_session_preserves_existing_key`
   - `restore_encrypted_backup_with_bad_ciphertext_without_session_fails_and_preserves_existing_key`
+  - `restore_encrypted_backup_with_unauthenticated_ciphertext_without_session_preserves_existing_key`
   - `restore_encrypted_backup_missing_required_fields_without_session_fails`
   - `restore_failed_validation_removes_temp_file`
   - `restore_structured_invalid_dev_plaintext_backup_preserves_existing_key`
