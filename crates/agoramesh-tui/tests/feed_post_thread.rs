@@ -8,39 +8,25 @@
     reason = "test fixtures may fail fast on setup errors"
 )]
 
+mod support;
+
 use agoramesh_core::objects::{category, post};
 use agoramesh_store::Store;
 use agoramesh_tui::app::AppState;
-use agoramesh_tui::backend::Backend;
 use agoramesh_tui::compose::{ComposeState, render_compose, submit_compose};
 use agoramesh_tui::feed::render_feed;
 use agoramesh_tui::models::{CategorySummary, Subscriptions};
 use agoramesh_tui::thread::render_thread;
-use chrono::{Timelike, Utc};
+use chrono::Utc;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use support::{temp_backend, truncate};
 
-#[track_caller]
-fn temp_backend() -> (Backend, tempfile::TempDir) {
-    let temp_dir = tempfile::tempdir().unwrap_or_else(|err| panic!("create tempdir: {err}"));
-    let backend = Backend::open(Some(temp_dir.path().to_path_buf()), true)
-        .unwrap_or_else(|err| panic!("open backend: {err}"));
-    (backend, temp_dir)
-}
-
-fn truncate(value: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
-    value
-        .date_naive()
-        .and_hms_micro_opt(value.hour(), value.minute(), value.second(), 0)
-        .unwrap_or_else(|| panic!("truncating to seconds is valid"))
-        .and_local_timezone(Utc)
-        .single()
-        .unwrap_or_else(|| panic!("UTC timezone is valid"))
-}
+const PLAINTEXT: bool = true;
 
 #[test]
 fn feed_and_thread_integration() {
-    let (backend, _temp_dir) = temp_backend();
+    let (backend, _temp_dir) = temp_backend(PLAINTEXT);
     backend.generate_dev_key().expect("generate dev key");
 
     let keypair = agoramesh_cli::keyring::Keyring::new(&backend.data_dir().join("identity.key"))
@@ -111,7 +97,7 @@ fn feed_and_thread_integration() {
 
 #[test]
 fn compose_preview_and_submit_integration() {
-    let (backend, _temp_dir) = temp_backend();
+    let (backend, _temp_dir) = temp_backend(PLAINTEXT);
     backend.generate_dev_key().expect("generate dev key");
     let keypair = agoramesh_cli::keyring::Keyring::new(&backend.data_dir().join("identity.key"))
         .dev_plaintext_load()
