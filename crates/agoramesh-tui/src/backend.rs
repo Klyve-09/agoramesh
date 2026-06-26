@@ -1,7 +1,8 @@
 //! Data gateway between the TUI and the underlying `AgoraMesh` crates.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use agoramesh_cli::config::Config;
 use agoramesh_cli::keyring::{self, Keyring};
@@ -29,6 +30,7 @@ const FIRST_SEEN_FILE: &str = "seen.json";
 pub struct Backend {
     config: Config,
     plaintext: bool,
+    passphrase: Mutex<Option<String>>,
 }
 
 impl Backend {
@@ -39,7 +41,11 @@ impl Backend {
     /// Returns an error when the data directory or store cannot be initialized.
     pub fn open(data_dir: Option<PathBuf>, plaintext: bool) -> Result<Self, Error> {
         let config = Config::open(data_dir)?;
-        Ok(Self { config, plaintext })
+        Ok(Self {
+            config,
+            plaintext,
+            passphrase: Mutex::new(None),
+        })
     }
 
     /// Opens the `SQLite` store for this backend.
@@ -65,6 +71,10 @@ impl Backend {
     /// Returns the path to the first-seen acknowledgements file.
     fn first_seen_path(&self) -> PathBuf {
         self.config.data_dir.join(FIRST_SEEN_FILE)
+    }
+
+    fn backup_key_path(&self) -> PathBuf {
+        self.config.data_dir.join("identity.key.backup")
     }
 
     /// Loads locally persisted subscriptions.
@@ -103,8 +113,8 @@ impl Backend {
         save_json(&self.first_seen_path(), acknowledged)
     }
 
-    /// Returns the current key status, generating a dev plaintext key when
-    /// requested and `plaintext` mode is enabled.
+    /// Returns the current key status, generating a dev plaintext key only when
+    /// requested and development plaintext mode is enabled.
     ///
     /// # Errors
     ///
@@ -121,9 +131,23 @@ impl Backend {
         if !path.exists() {
             return Ok(KeyStatus::Missing);
         }
-        let keypair = self.load_keypair()?;
-        Ok(KeyStatus::Present {
-            public_key_hex: keyring::public_key_hex(&keypair),
+        if self.plaintext {
+            let keypair = self.load_keypair()?;
+            return Ok(KeyStatus::Present {
+                public_key_hex: keyring::public_key_hex(&keypair),
+            });
+        }
+
+        let passphrase = self.session_passphrase()?;
+        if let Some(passphrase) = passphrase {
+            let keypair = Keyring::new(&path).load(&passphrase)?;
+            return Ok(KeyStatus::Present {
+                public_key_hex: keyring::public_key_hex(&keypair),
+            });
+        }
+
+        Ok(KeyStatus::Locked {
+            public_key_hex: encrypted_public_key(&path)?,
         })
     }
 
@@ -142,13 +166,62 @@ impl Backend {
         self.key_status(false)
     }
 
+    /// Generates and unlocks a Phase 1 encrypted keyring.
+    pub fn generate_encrypted_key(&self, passphrase: &str) -> Result<KeyStatus, Error> {
+        Keyring::new(&self.config.key_path()).generate(passphrase)?;
+        self.set_session_passphrase(passphrase)?;
+        self.key_status(false)
+    }
+
+    /// Unlocks an existing encrypted keyring for this TUI session.
+    pub fn unlock_key(&self, passphrase: &str) -> Result<KeyStatus, Error> {
+        let keypair = Keyring::new(&self.config.key_path()).load(passphrase)?;
+        self.set_session_passphrase(passphrase)?;
+        Ok(KeyStatus::Present {
+            public_key_hex: keyring::public_key_hex(&keypair),
+        })
+    }
+
+    /// Writes an atomic backup copy of the current key file.
+    pub fn backup_key(&self) -> Result<PathBuf, Error> {
+        let source = self.config.key_path();
+        let backup = self.backup_key_path();
+        let bytes = std::fs::read(&source).map_err(Error::StateIo)?;
+        write_atomic(&backup, &bytes)?;
+        Ok(backup)
+    }
+
+    /// Restores the current key file from the default backup copy.
+    pub fn restore_key_from_backup(&self) -> Result<(), Error> {
+        let bytes = std::fs::read(self.backup_key_path()).map_err(Error::StateIo)?;
+        write_atomic(&self.config.key_path(), &bytes)
+    }
+
     fn load_keypair(&self) -> Result<Keypair, Error> {
         if self.plaintext {
             return Ok(Keyring::new(&self.config.key_path()).dev_plaintext_load()?);
         }
-        Err(Error::Message(
-            "encrypted key loading is not yet supported by the TUI".to_owned(),
-        ))
+        let passphrase = self.session_passphrase()?.ok_or_else(|| {
+            Error::Message("encrypted key is locked; enter passphrase in Key Management".to_owned())
+        })?;
+        Ok(Keyring::new(&self.config.key_path()).load(&passphrase)?)
+    }
+
+    fn session_passphrase(&self) -> Result<Option<String>, Error> {
+        self.passphrase
+            .lock()
+            .map_err(|_error| Error::Message("key session lock poisoned".to_owned()))
+            .map(|passphrase| passphrase.clone())
+    }
+
+    fn set_session_passphrase(&self, passphrase: &str) -> Result<(), Error> {
+        let mut session = self
+            .passphrase
+            .lock()
+            .map_err(|_error| Error::Message("key session lock poisoned".to_owned()))?;
+        *session = Some(passphrase.to_owned());
+        drop(session);
+        Ok(())
     }
 
     /// Loads categories stored in the local store, newest last.
@@ -240,8 +313,13 @@ impl Backend {
                 .or_insert_with(Vec::new)
                 .push(loaded_comment);
         }
-        let comments =
-            build_comment_tree(post_message_id, &ParentKind::Post, &mut comments_by_parent);
+        let mut visited = HashSet::new();
+        let comments = build_comment_tree(
+            post_message_id,
+            &ParentKind::Post,
+            &mut comments_by_parent,
+            &mut visited,
+        );
 
         Ok(ThreadView { post, comments })
     }
@@ -306,11 +384,26 @@ fn load_json<T: Default + serde::de::DeserializeOwned>(
 }
 
 fn save_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Error> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(Error::StateJson)?;
+    write_atomic(path, &bytes)
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(Error::StateIo)?;
     }
-    let bytes = serde_json::to_vec_pretty(value).map_err(Error::StateJson)?;
-    std::fs::write(path, bytes).map_err(Error::StateIo)
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, bytes).map_err(Error::StateIo)?;
+    std::fs::rename(tmp_path, path).map_err(Error::StateIo)
+}
+
+fn encrypted_public_key(path: &Path) -> Result<Option<String>, Error> {
+    let bytes = std::fs::read(path).map_err(Error::StateIo)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(Error::StateJson)?;
+    Ok(value
+        .get("public_key_hex")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
 #[derive(Debug)]
@@ -354,6 +447,7 @@ fn build_comment_tree(
     parent_id: agoramesh_core::MessageId,
     parent_kind: &ParentKind,
     comments_by_parent: &mut HashMap<agoramesh_core::MessageId, Vec<LoadedComment>>,
+    visited: &mut HashSet<agoramesh_core::MessageId>,
 ) -> Vec<ThreadComment> {
     let mut comments = comments_by_parent.remove(&parent_id).unwrap_or_default();
     comments.retain(|comment| comment.parent_kind == *parent_kind);
@@ -361,17 +455,23 @@ fn build_comment_tree(
 
     comments
         .into_iter()
-        .map(|comment| ThreadComment {
-            object_id: comment.object_id_hex,
-            author_id: comment.author_id,
-            text: comment.text,
-            created_at: comment.created_at,
-            replies: build_comment_tree(
-                comment.object_id,
-                &ParentKind::Comment,
-                comments_by_parent,
-            ),
-            collapsed: false,
+        .filter_map(|comment| {
+            if !visited.insert(comment.object_id) {
+                return None;
+            }
+            Some(ThreadComment {
+                object_id: comment.object_id_hex,
+                author_id: comment.author_id,
+                text: comment.text,
+                created_at: comment.created_at,
+                replies: build_comment_tree(
+                    comment.object_id,
+                    &ParentKind::Comment,
+                    comments_by_parent,
+                    visited,
+                ),
+                collapsed: false,
+            })
         })
         .collect()
 }
