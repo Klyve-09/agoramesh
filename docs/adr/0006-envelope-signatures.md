@@ -92,6 +92,5 @@ It also makes verification rules straightforward. Single author objects have one
 The tradeoff is that every implementation must follow the same canonical ordering rules exactly. Any drift in serialization, signer ordering, or quorum checks will fork validation.
 
 ## References
-1. `/home/hyh/project/agoramesh/docs/v1.0-roadmap.md`
-2. `/home/hyh/project/agoramesh/docs/v1.0-roadmap-revised.md`
-3. `/home/hyh/project/agoramesh/docs/agoramesh-design-notes.md`
+1. `docs/v1.0-roadmap.md`
+2. `docs/agoramesh-design-notes.md`
