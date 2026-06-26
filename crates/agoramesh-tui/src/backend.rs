@@ -162,15 +162,26 @@ impl Backend {
                 "plaintext key generation is only available in dev mode".to_owned(),
             ));
         }
+        self.reject_key_overwrite()?;
         Keyring::new(&self.config.key_path()).dev_plaintext_save()?;
         self.key_status(false)
     }
 
     /// Generates and unlocks a Phase 1 encrypted keyring.
     pub fn generate_encrypted_key(&self, passphrase: &str) -> Result<KeyStatus, Error> {
+        self.reject_key_overwrite()?;
         Keyring::new(&self.config.key_path()).generate(passphrase)?;
         self.set_session_passphrase(passphrase)?;
         self.key_status(false)
+    }
+
+    fn reject_key_overwrite(&self) -> Result<(), Error> {
+        if self.config.key_path().exists() {
+            return Err(Error::Message(
+                "Key overwrite disabled; use backup/restore instead".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Unlocks an existing encrypted keyring for this TUI session.

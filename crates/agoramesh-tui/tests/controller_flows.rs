@@ -267,6 +267,46 @@ fn encrypted_key_generate_reopen_unlock_backup_restore() {
 }
 
 #[test]
+fn encrypted_key_generate_does_not_overwrite_existing_key() {
+    let (backend, _temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "first passphrase".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let first_public_key = public_key_hex(&state.key_status);
+
+    for ch in "second passphrase".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+
+    assert_eq!(public_key_hex(&state.key_status), first_public_key);
+    assert_eq!(
+        state.status_message.as_deref(),
+        Some("Key overwrite disabled; use backup/restore instead")
+    );
+}
+
+#[test]
+fn dev_plaintext_key_generate_does_not_overwrite_existing_key() {
+    let (backend, _temp_dir) = temp_backend(true);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('d')));
+    let first_public_key = public_key_hex(&state.key_status);
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('d')));
+
+    assert_eq!(public_key_hex(&state.key_status), first_public_key);
+    assert_eq!(
+        state.status_message.as_deref(),
+        Some("Key overwrite disabled; use backup/restore instead")
+    );
+}
+
+#[test]
 fn unknown_key_does_not_change_screen_to_feed() {
     let (backend, _temp_dir) = temp_backend(true);
     let mut state = AppState::new();
@@ -336,4 +376,19 @@ fn press(code: KeyCode) -> Event {
 
 fn ctrl(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
+}
+
+fn public_key_hex(status: &KeyStatus) -> String {
+    match status {
+        KeyStatus::Present { public_key_hex }
+        | KeyStatus::Locked {
+            public_key_hex: Some(public_key_hex),
+        } => public_key_hex.clone(),
+        KeyStatus::Missing
+        | KeyStatus::Locked {
+            public_key_hex: None,
+        } => {
+            panic!("key status has no public key: {status:?}")
+        }
+    }
 }

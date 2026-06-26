@@ -11,6 +11,8 @@ use crate::first_seen::compute_warnings;
 use crate::key_ux;
 use crate::models::{CategorySummary, FeedFocus, FeedPost, Screen};
 
+const KEY_OVERWRITE_DISABLED: &str = "Key overwrite disabled; use backup/restore instead";
+
 /// Handles one UI action, including backend side effects when required.
 pub fn handle_action(
     backend: &Backend,
@@ -26,8 +28,8 @@ pub fn handle_action(
         Action::Select => handle_select(backend, state),
         Action::AcknowledgeCurrentWarning => acknowledge_current_warning(backend, state),
         Action::ComposeSubmit => Ok(handle_compose_submit(backend, state)),
-        Action::GenerateDevKey => handle_generate_dev_key(backend, state),
-        Action::GenerateEncryptedKey => handle_generate_encrypted_key(backend, state),
+        Action::GenerateDevKey => Ok(handle_generate_dev_key(backend, state)),
+        Action::GenerateEncryptedKey => Ok(handle_generate_encrypted_key(backend, state)),
         Action::UnlockKey => Ok(handle_unlock_key(backend, state)),
         Action::BackupKey => handle_backup_key(backend, state),
         Action::RestoreKey => handle_restore_key(backend, state),
@@ -150,30 +152,35 @@ fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> Option<Acti
     }
 }
 
-fn handle_generate_dev_key(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
-    let key_status = key_ux::generate_dev_key(backend)?;
-    state.key_status = key_status;
-    state.key_input.status = Some("Development key generated".to_owned());
-    state.status_message = Some("Development key generated".to_owned());
-    Ok(None)
+fn handle_generate_dev_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
+    match key_ux::generate_dev_key(backend) {
+        Ok(key_status) => {
+            state.key_status = key_status;
+            state.key_input.status = Some("Development key generated".to_owned());
+            state.status_message = Some("Development key generated".to_owned());
+        }
+        Err(error) => set_key_error_status(state, error.to_string()),
+    }
+    None
 }
 
-fn handle_generate_encrypted_key(
-    backend: &Backend,
-    state: &mut AppState,
-) -> Result<Option<Action>> {
+fn handle_generate_encrypted_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
     if state.key_input.passphrase.is_empty() {
         let message = "type a passphrase before generating an encrypted key".to_owned();
         state.key_input.status = Some(message.clone());
         state.status_message = Some(message);
-        return Ok(None);
+        return None;
     }
-    let status = backend.generate_encrypted_key(&state.key_input.passphrase)?;
-    state.key_status = status;
-    state.key_input.passphrase.clear();
-    state.key_input.status = Some("Encrypted key generated and unlocked".to_owned());
-    state.status_message = Some("Encrypted key generated and unlocked".to_owned());
-    Ok(None)
+    match backend.generate_encrypted_key(&state.key_input.passphrase) {
+        Ok(status) => {
+            state.key_status = status;
+            state.key_input.passphrase.clear();
+            state.key_input.status = Some("Encrypted key generated and unlocked".to_owned());
+            state.status_message = Some("Encrypted key generated and unlocked".to_owned());
+        }
+        Err(error) => set_key_error_status(state, error.to_string()),
+    }
+    None
 }
 
 fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
@@ -240,6 +247,21 @@ fn visible_category_index(state: &AppState, category_id: &str) -> Option<usize> 
     state
         .categories
         .iter()
-        .filter(|category| state.subscriptions.category_ids.contains(&category.category_id))
+        .filter(|category| {
+            state
+                .subscriptions
+                .category_ids
+                .contains(&category.category_id)
+        })
         .position(|category| category.category_id == category_id)
+}
+
+fn set_key_error_status(state: &mut AppState, message: String) {
+    let message = if message == format!("message error: {KEY_OVERWRITE_DISABLED}") {
+        KEY_OVERWRITE_DISABLED.to_owned()
+    } else {
+        message
+    };
+    state.key_input.status = Some(message.clone());
+    state.status_message = Some(message);
 }
