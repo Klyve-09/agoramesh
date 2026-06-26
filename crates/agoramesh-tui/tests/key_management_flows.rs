@@ -237,6 +237,48 @@ fn restore_encrypted_backup_with_bad_ciphertext_without_session_fails_and_preser
 }
 
 #[test]
+fn restore_encrypted_backup_with_unauthenticated_ciphertext_without_session_preserves_existing_key()
+{
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let existing_key_bytes = std::fs::read(identity_key_path(&temp_dir)).expect("read key");
+
+    let reopened = Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen");
+    let mut locked_state = AppState::new();
+    locked_state.screen = Screen::KeyManagement;
+    locked_state.key_status = reopened.key_status(false).expect("locked key status");
+    let random_ciphertext = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH";
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(
+            r#"{{"version":1,"public_key_hex":"{existing_public_key}","kdf":{{"algorithm":"argon2id","memory_cost_kib":19456,"time_cost":2,"parallelism":1}},"salt":"AAAAAAAAAAAAAAAAAAAAAA","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ciphertext":"{random_ciphertext}"}}"#
+        ),
+    )
+    .expect("write unauthenticated encrypted backup");
+
+    let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(locked_state.screen, Screen::KeyManagement);
+    assert_status_contains(&locked_state, "Restore failed");
+    assert_eq!(
+        std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
+        existing_key_bytes
+    );
+    assert_eq!(
+        public_key_hex(&reopened.key_status(false).expect("refreshed locked status")),
+        existing_public_key
+    );
+    assert!(!temp_restore_path(&temp_dir).exists());
+}
+
+#[test]
 fn restore_encrypted_backup_missing_required_fields_without_session_fails() {
     let (backend, temp_dir) = temp_backend(false);
     let mut state = AppState::new();

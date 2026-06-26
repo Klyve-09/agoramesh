@@ -16,6 +16,8 @@ const KEYRING_VERSION: u32 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const KEY_LEN: usize = 32;
+const AEAD_TAG_LEN: usize = 16;
+const CIPHERTEXT_LEN: usize = KEY_LEN + AEAD_TAG_LEN;
 const ARGON2_MEMORY_COST_KIB: u32 = 19_456;
 const ARGON2_TIME_COST: u32 = 2;
 const ARGON2_PARALLELISM: u32 = 1;
@@ -305,10 +307,11 @@ fn validate_encrypted_structure(
     validate_salt(&file.salt)?;
     decode_nonce(&file.nonce)?;
     let ciphertext = decode_base64(&file.ciphertext, "ciphertext")?;
-    if ciphertext.is_empty() {
-        return Err(KeyringError::InvalidFormat(
-            "ciphertext must not be empty".to_owned(),
-        ));
+    if ciphertext.len() != CIPHERTEXT_LEN {
+        return Err(KeyringError::InvalidFormat(format!(
+            "invalid ciphertext length: expected {CIPHERTEXT_LEN}, got {}",
+            ciphertext.len()
+        )));
     }
     validate_kdf_params(&file.kdf)?;
     Ok(EncryptedKeyMetadata {

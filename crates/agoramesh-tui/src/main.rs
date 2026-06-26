@@ -16,11 +16,7 @@ struct Args {
     data_dir: Option<PathBuf>,
 
     /// Run in plaintext dev key mode (do not use for real identities).
-    #[arg(
-        long,
-        alias = "plaintext",
-        env = "AGORAMESH_DEV_INSECURE_PLAINTEXT_KEY"
-    )]
+    #[arg(long, env = "AGORAMESH_DEV_INSECURE_PLAINTEXT_KEY")]
     dev_insecure_plaintext_key: bool,
 }
 

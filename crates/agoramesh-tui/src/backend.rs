@@ -240,6 +240,12 @@ impl Backend {
             return Ok(());
         }
 
+        if self.config.key_path().exists() {
+            return Err(Error::Message(
+                "encrypted key is locked; unlock before restoring over an existing key".to_owned(),
+            ));
+        }
+
         keyring::validate_encrypted_key_bytes_structure(bytes)?;
         Ok(())
     }
