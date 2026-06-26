@@ -39,7 +39,7 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- 2026-06-26 PR #5 code head `0585e81`: Phase 2 blocker fixes verified after
+- 2026-06-26 PR #5 code head `0bee540`: Phase 2 blocker fixes verified after
   subscription cache, compose selection, key overwrite protection, terminal
   setup cleanup, and nonfatal key backup/restore changes.
 - Automated checks passed:
