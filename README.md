@@ -11,7 +11,11 @@ A decentralized mesh-messaging network built in Rust.
 
 ## Phase 1 boundary
 
-This milestone implements a minimal P2P text prototype:
+This milestone implements a minimal P2P text prototype. The Phase 1 completion checkpoint is recorded at:
+
+- docs/checkpoints/2026-06-25-phase1-completion.md
+
+Scope:
 
 - Canonical message signing/verification (ADR 0001, ADR 0006).
 - Verified local SQLite storage.
