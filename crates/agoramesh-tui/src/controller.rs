@@ -246,7 +246,12 @@ fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Option<Action>
                 ),
             ),
         },
-        Err(error) => set_key_error_status(state, restore_error_message(&error)),
+        Err(error) => {
+            if let Ok(status) = backend.key_status(false) {
+                state.key_status = status;
+            }
+            set_key_error_status(state, restore_error_message(&error));
+        }
     }
     None
 }

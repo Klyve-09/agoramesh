@@ -152,6 +152,181 @@ fn restore_corrupt_backup_sets_status_and_preserves_existing_key() {
 }
 
 #[test]
+fn restore_structured_invalid_encrypted_backup_without_session_preserves_existing_key() {
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let existing_key_bytes = std::fs::read(identity_key_path(&temp_dir)).expect("read key");
+
+    let reopened = Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen");
+    let mut locked_state = AppState::new();
+    locked_state.screen = Screen::KeyManagement;
+    locked_state.key_status = reopened.key_status(false).expect("locked key status");
+    assert_eq!(
+        public_key_hex(&locked_state.key_status),
+        existing_public_key
+    );
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(r#"{{"public_key_hex":"{existing_public_key}"}}"#),
+    )
+    .expect("write structured invalid backup");
+
+    let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(locked_state.screen, Screen::KeyManagement);
+    assert_status_contains(&locked_state, "Restore failed");
+    assert_eq!(
+        std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
+        existing_key_bytes
+    );
+    assert_eq!(
+        public_key_hex(&locked_state.key_status),
+        existing_public_key
+    );
+    assert_eq!(
+        public_key_hex(&reopened.key_status(false).expect("refreshed locked status")),
+        existing_public_key
+    );
+    assert!(!temp_restore_path(&temp_dir).exists());
+}
+
+#[test]
+fn restore_encrypted_backup_with_bad_ciphertext_without_session_fails_and_preserves_existing_key() {
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let existing_key_bytes = std::fs::read(identity_key_path(&temp_dir)).expect("read key");
+
+    let reopened = Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen");
+    let mut locked_state = AppState::new();
+    locked_state.screen = Screen::KeyManagement;
+    locked_state.key_status = reopened.key_status(false).expect("locked key status");
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(
+            r#"{{"version":1,"public_key_hex":"{existing_public_key}","kdf":{{"algorithm":"argon2id","memory_cost_kib":19456,"time_cost":2,"parallelism":1}},"salt":"AAAAAAAAAAAAAAAAAAAAAA","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ciphertext":"!not-base64url!"}}"#
+        ),
+    )
+    .expect("write malformed encrypted backup");
+
+    let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(locked_state.screen, Screen::KeyManagement);
+    assert_status_contains(&locked_state, "Restore failed");
+    assert_eq!(
+        std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
+        existing_key_bytes
+    );
+    assert_eq!(
+        public_key_hex(&reopened.key_status(false).expect("refreshed locked status")),
+        existing_public_key
+    );
+}
+
+#[test]
+fn restore_encrypted_backup_missing_required_fields_without_session_fails() {
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let existing_key_bytes = std::fs::read(identity_key_path(&temp_dir)).expect("read key");
+
+    let reopened = Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen");
+    let mut locked_state = AppState::new();
+    locked_state.screen = Screen::KeyManagement;
+    locked_state.key_status = reopened.key_status(false).expect("locked key status");
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(r#"{{"public_key_hex":"{existing_public_key}","version":1}}"#),
+    )
+    .expect("write missing-fields backup");
+
+    let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(locked_state.screen, Screen::KeyManagement);
+    assert_status_contains(&locked_state, "Restore failed");
+    assert_eq!(
+        std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
+        existing_key_bytes
+    );
+}
+
+#[test]
+fn restore_failed_validation_removes_temp_file() {
+    let (backend, temp_dir) = temp_backend(false);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    for ch in "correct horse".chars() {
+        dispatch(&backend, &mut state, &press(KeyCode::Char(ch)));
+    }
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('g')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let reopened = Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen");
+    let mut locked_state = AppState::new();
+    locked_state.screen = Screen::KeyManagement;
+    locked_state.key_status = reopened.key_status(false).expect("locked key status");
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(r#"{{"public_key_hex":"{existing_public_key}"}}"#),
+    )
+    .expect("write structured invalid backup");
+
+    let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_status_contains(&locked_state, "Restore failed");
+    assert!(!temp_restore_path(&temp_dir).exists());
+}
+
+#[test]
+fn restore_structured_invalid_dev_plaintext_backup_preserves_existing_key() {
+    let (backend, temp_dir) = temp_backend(true);
+    let mut state = AppState::new();
+    state.screen = Screen::KeyManagement;
+    dispatch(&backend, &mut state, &ctrl(KeyCode::Char('d')));
+    let existing_public_key = public_key_hex(&state.key_status);
+    let existing_key_bytes = std::fs::read(identity_key_path(&temp_dir)).expect("read key");
+    std::fs::write(
+        backup_key_path(&temp_dir),
+        format!(r#"{{"public_key_hex":"{existing_public_key}"}}"#),
+    )
+    .expect("write structured invalid plaintext backup");
+
+    let result = handle_action(&backend, &mut state, Action::RestoreKey);
+
+    assert!(result.is_ok());
+    assert_eq!(state.screen, Screen::KeyManagement);
+    assert_status_contains(&state, "Restore failed");
+    assert_eq!(
+        std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
+        existing_key_bytes
+    );
+    assert_eq!(
+        public_key_hex(&backend.key_status(false).expect("key status")),
+        existing_public_key
+    );
+    assert!(!temp_restore_path(&temp_dir).exists());
+}
+
+#[test]
 fn backup_write_failure_sets_status_and_does_not_exit() {
     let (backend, temp_dir) = temp_backend(true);
     let mut state = AppState::new();
@@ -222,6 +397,18 @@ fn press(code: KeyCode) -> Event {
 
 fn ctrl(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
+}
+
+fn identity_key_path(temp_dir: &tempfile::TempDir) -> std::path::PathBuf {
+    temp_dir.path().join("identity.key")
+}
+
+fn backup_key_path(temp_dir: &tempfile::TempDir) -> std::path::PathBuf {
+    temp_dir.path().join("identity.key.backup")
+}
+
+fn temp_restore_path(temp_dir: &tempfile::TempDir) -> std::path::PathBuf {
+    temp_dir.path().join("identity.restore.tmp")
 }
 
 fn public_key_hex(status: &KeyStatus) -> String {

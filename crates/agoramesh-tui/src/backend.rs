@@ -148,7 +148,7 @@ impl Backend {
         }
 
         Ok(KeyStatus::Locked {
-            public_key_hex: encrypted_public_key(&path)?,
+            public_key_hex: keyring::read_encrypted_public_key_for_display(&path)?,
         })
     }
 
@@ -206,28 +206,56 @@ impl Backend {
     /// Restores the current key file from the default backup copy.
     pub fn restore_key_from_backup(&self) -> Result<(), Error> {
         let bytes = std::fs::read(self.backup_key_path()).map_err(Error::StateIo)?;
+        self.validate_restored_key_bytes(&bytes)?;
         let target = self.config.key_path();
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(Error::StateIo)?;
         }
         let tmp_path = target.with_extension("restore.tmp");
         write_temp_file(&tmp_path, &bytes)?;
-        self.validate_restored_key(&tmp_path)?;
-        std::fs::rename(tmp_path, target).map_err(Error::StateIo)
+        if let Err(error) = self.validate_restored_key_file(&tmp_path) {
+            remove_temp_file(&tmp_path);
+            return Err(error);
+        }
+        match std::fs::rename(&tmp_path, &target) {
+            Ok(()) => {
+                sync_parent_dir(&target);
+                Ok(())
+            }
+            Err(source) => {
+                remove_temp_file(&tmp_path);
+                Err(Error::StateIo(source))
+            }
+        }
     }
 
-    fn validate_restored_key(&self, path: &Path) -> Result<(), Error> {
+    fn validate_restored_key_bytes(&self, bytes: &[u8]) -> Result<(), Error> {
+        if self.plaintext {
+            keyring::validate_dev_plaintext_key_bytes_structure(bytes)?;
+            return Ok(());
+        }
+
+        if let Some(passphrase) = self.session_passphrase()? {
+            keyring::load(bytes, &passphrase)?;
+            return Ok(());
+        }
+
+        keyring::validate_encrypted_key_bytes_structure(bytes)?;
+        Ok(())
+    }
+
+    fn validate_restored_key_file(&self, path: &Path) -> Result<(), Error> {
         if self.plaintext {
             Keyring::new(path).dev_plaintext_load()?;
             return Ok(());
         }
 
         if let Some(passphrase) = self.session_passphrase()? {
-            Keyring::new(path).load(&passphrase)?;
+            keyring::load_encrypted_key_with_passphrase(path, &passphrase)?;
             return Ok(());
         }
 
-        encrypted_public_key(path)?;
+        keyring::validate_encrypted_key_file_structure(path)?;
         Ok(())
     }
 
@@ -437,13 +465,17 @@ fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     file.sync_all().map_err(Error::StateIo)
 }
 
-fn encrypted_public_key(path: &Path) -> Result<Option<String>, Error> {
-    let bytes = std::fs::read(path).map_err(Error::StateIo)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(Error::StateJson)?;
-    Ok(value
-        .get("public_key_hex")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned))
+fn remove_temp_file(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+fn sync_parent_dir(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Ok(directory) = std::fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
 }
 
 #[derive(Debug)]
