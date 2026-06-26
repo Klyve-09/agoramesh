@@ -16,6 +16,8 @@ const KEYRING_VERSION: u32 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const KEY_LEN: usize = 32;
+const AEAD_TAG_LEN: usize = 16;
+const CIPHERTEXT_LEN: usize = KEY_LEN + AEAD_TAG_LEN;
 const ARGON2_MEMORY_COST_KIB: u32 = 19_456;
 const ARGON2_TIME_COST: u32 = 2;
 const ARGON2_PARALLELISM: u32 = 1;
@@ -45,6 +47,13 @@ struct PlaintextKeyFile {
     format: String,
     public_key_hex: String,
     secret_seed: String,
+}
+
+/// Metadata proven to come from a structurally valid encrypted key file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncryptedKeyMetadata {
+    /// Lower-hex Ed25519 verifying key stored beside the encrypted seed.
+    pub public_key_hex: String,
 }
 
 /// Errors produced while encoding or loading CLI key files.
@@ -94,8 +103,7 @@ impl Keyring {
 
     /// Loads an encrypted keypair.
     pub fn load(&self, passphrase: &str) -> Result<Keypair, KeyringError> {
-        let bytes = std::fs::read(&self.path)?;
-        load(&bytes, passphrase)
+        load_encrypted_key_with_passphrase(&self.path, passphrase)
     }
 
     /// Generates and saves a development-only plaintext keypair.
@@ -112,6 +120,50 @@ impl Keyring {
     }
 }
 
+/// Reads only the encrypted-key public-key metadata for display.
+///
+/// This helper does not prove the encrypted key file is safe to restore. Use
+/// [`validate_encrypted_key_file_structure`] for restore validation.
+pub fn read_encrypted_public_key_for_display(path: &Path) -> Result<Option<String>, KeyringError> {
+    let bytes = std::fs::read(path)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| KeyringError::InvalidFormat(error.to_string()))?;
+    Ok(value
+        .get("public_key_hex")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
+}
+
+/// Validates that a file is a complete encrypted key file without decrypting it.
+pub fn validate_encrypted_key_file_structure(
+    path: &Path,
+) -> Result<EncryptedKeyMetadata, KeyringError> {
+    let bytes = std::fs::read(path)?;
+    validate_encrypted_key_bytes_structure(&bytes)
+}
+
+/// Validates that bytes are a complete encrypted key file without decrypting them.
+pub fn validate_encrypted_key_bytes_structure(
+    bytes: &[u8],
+) -> Result<EncryptedKeyMetadata, KeyringError> {
+    let file = parse_encrypted_key_file(bytes)?;
+    validate_encrypted_structure(&file)
+}
+
+/// Loads an encrypted key file with authenticated decryption.
+pub fn load_encrypted_key_with_passphrase(
+    path: &Path,
+    passphrase: &str,
+) -> Result<Keypair, KeyringError> {
+    let bytes = std::fs::read(path)?;
+    load(&bytes, passphrase)
+}
+
+/// Validates development plaintext key bytes by importing the contained seed.
+pub fn validate_dev_plaintext_key_bytes_structure(bytes: &[u8]) -> Result<(), KeyringError> {
+    load_plaintext(bytes).map(|_keypair| ())
+}
+
 /// Generates encrypted keyring bytes for a new keypair.
 pub fn generate(passphrase: &str) -> Result<Vec<u8>, KeyringError> {
     serialize_encrypted(&Keypair::generate(), passphrase)
@@ -119,10 +171,9 @@ pub fn generate(passphrase: &str) -> Result<Vec<u8>, KeyringError> {
 
 /// Loads an encrypted keyring from bytes with the provided passphrase.
 pub fn load(encrypted_bytes: &[u8], passphrase: &str) -> Result<Keypair, KeyringError> {
-    let file: EncryptedKeyFile = serde_json::from_slice(encrypted_bytes)
-        .map_err(|error| KeyringError::InvalidFormat(error.to_string()))?;
+    let file = parse_encrypted_key_file(encrypted_bytes)?;
 
-    validate_encrypted_header(&file)?;
+    validate_encrypted_structure(&file)?;
     let salt = decode_base64(&file.salt, "salt")?;
     let nonce = decode_nonce(&file.nonce)?;
     let ciphertext = decode_base64(&file.ciphertext, "ciphertext")?;
@@ -241,6 +292,64 @@ fn validate_encrypted_header(file: &EncryptedKeyFile) -> Result<(), KeyringError
             file.kdf.algorithm
         )));
     }
+    Ok(())
+}
+
+fn parse_encrypted_key_file(bytes: &[u8]) -> Result<EncryptedKeyFile, KeyringError> {
+    serde_json::from_slice(bytes).map_err(|error| KeyringError::InvalidFormat(error.to_string()))
+}
+
+fn validate_encrypted_structure(
+    file: &EncryptedKeyFile,
+) -> Result<EncryptedKeyMetadata, KeyringError> {
+    validate_encrypted_header(file)?;
+    validate_public_key_hex(&file.public_key_hex)?;
+    validate_salt(&file.salt)?;
+    decode_nonce(&file.nonce)?;
+    let ciphertext = decode_base64(&file.ciphertext, "ciphertext")?;
+    if ciphertext.len() != CIPHERTEXT_LEN {
+        return Err(KeyringError::InvalidFormat(format!(
+            "invalid ciphertext length: expected {CIPHERTEXT_LEN}, got {}",
+            ciphertext.len()
+        )));
+    }
+    validate_kdf_params(&file.kdf)?;
+    Ok(EncryptedKeyMetadata {
+        public_key_hex: file.public_key_hex.clone(),
+    })
+}
+
+fn validate_public_key_hex(public_key_hex: &str) -> Result<(), KeyringError> {
+    let bytes = hex::decode(public_key_hex)
+        .map_err(|error| KeyringError::InvalidFormat(format!("invalid public_key_hex: {error}")))?;
+    if bytes.len() != KEY_LEN {
+        return Err(KeyringError::InvalidFormat(format!(
+            "invalid public_key_hex length: expected {KEY_LEN}, got {}",
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_salt(encoded: &str) -> Result<(), KeyringError> {
+    let salt = decode_base64(encoded, "salt")?;
+    if salt.len() != SALT_LEN {
+        return Err(KeyringError::InvalidFormat(format!(
+            "invalid salt length: expected {SALT_LEN}, got {}",
+            salt.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_kdf_params(kdf: &KdfConfig) -> Result<(), KeyringError> {
+    Params::new(
+        kdf.memory_cost_kib,
+        kdf.time_cost,
+        kdf.parallelism,
+        Some(KEY_LEN),
+    )
+    .map_err(|error| KeyringError::Kdf(error.to_string()))?;
     Ok(())
 }
 
