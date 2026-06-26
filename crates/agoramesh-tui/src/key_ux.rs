@@ -2,8 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::app::AppState;
@@ -18,14 +17,25 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
             let lines: Vec<Line<'_>> = vec![
                 Line::from("No identity key found."),
                 Line::from(""),
-                Line::from(vec![Span::styled(
-                    "In dev mode (--plaintext), press g to generate a development plaintext key.",
-                    Style::default().fg(Color::Yellow),
-                )]),
+                Line::from("Type a passphrase, then press g to generate an encrypted key."),
+                Line::from("Use d only when started with --dev-insecure-plaintext-key."),
                 Line::from(""),
-                Line::from("For production, use `agoramesh-cli key generate` and restart the TUI."),
+                Line::from(masked_passphrase_line(state)),
+                Line::from(action_status_line(state)),
             ];
             ("Key Management — Missing", lines)
+        }
+        KeyStatus::Locked { public_key_hex } => {
+            let public_key = public_key_hex.as_deref().unwrap_or("encrypted key present");
+            let lines: Vec<Line<'_>> = vec![
+                Line::from("Encrypted identity key is locked."),
+                Line::from(format!("Public key: {public_key}")),
+                Line::from("Type passphrase, then press u or Enter to unlock."),
+                Line::from(""),
+                Line::from(masked_passphrase_line(state)),
+                Line::from(action_status_line(state)),
+            ];
+            ("Key Management — Locked", lines)
         }
         KeyStatus::Present { public_key_hex } => {
             let lines: Vec<Line<'_>> = vec![
@@ -34,8 +44,9 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
                 Line::from(format!("Public key: {public_key_hex}")),
                 Line::from(""),
                 Line::from("Backup hint: keep your key file and passphrase safe."),
-                Line::from("Recovery hint: use `agoramesh-cli key show` after unlocking your key."),
+                Line::from("Press Ctrl+b to write identity.key.backup; Ctrl+r restores it."),
                 Line::from("The secret seed is never shown here."),
+                Line::from(action_status_line(state)),
             ];
             ("Key Management — Present", lines)
         }
@@ -52,6 +63,20 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
 /// the key file cannot be written.
 pub fn generate_dev_key(backend: &Backend) -> Result<KeyStatus, Error> {
     backend.generate_dev_key()
+}
+
+fn masked_passphrase_line(state: &AppState) -> String {
+    format!(
+        "Passphrase: {}",
+        "•".repeat(state.key_input.passphrase.chars().count())
+    )
+}
+
+fn action_status_line(state: &AppState) -> String {
+    state.key_input.status.clone().unwrap_or_else(|| {
+        "Keys: Ctrl+g generate encrypted | Enter unlock | Ctrl+b backup | Ctrl+r restore | Ctrl+d dev plaintext"
+            .to_owned()
+    })
 }
 
 #[cfg(test)]

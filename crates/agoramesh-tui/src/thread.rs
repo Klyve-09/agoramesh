@@ -14,7 +14,7 @@ pub fn render_thread(state: &AppState, area: Rect, buf: &mut Buffer) {
     let layout = thread_layout(area);
     if let Some(thread) = &state.thread {
         render_post(&thread.post, layout.post, buf);
-        render_comments(&thread.comments, 0, layout.comments, buf);
+        render_comments(&thread.comments, state.selected_index, layout.comments, buf);
     } else {
         let empty = Paragraph::new("No post selected. Return to feed and press Enter.")
             .block(Block::default().borders(Borders::ALL).title("Thread"));
@@ -50,41 +50,55 @@ fn render_post(post: &FeedPost, area: Rect, buf: &mut Buffer) {
         .render(area, buf);
 }
 
-fn render_comments(comments: &[ThreadComment], depth: usize, area: Rect, buf: &mut Buffer) {
+fn render_comments(
+    comments: &[ThreadComment],
+    selected_index: usize,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    flatten_comments(comments, 0, selected_index, &mut 0, &mut lines);
+    let block = Block::default().borders(Borders::ALL).title("Comments");
+    Paragraph::new(lines).block(block).render(area, buf);
+}
+
+fn flatten_comments(
+    comments: &[ThreadComment],
+    depth: usize,
+    selected_index: usize,
+    row_index: &mut usize,
+    lines: &mut Vec<Line<'static>>,
+) {
     let indent = "  ".repeat(depth);
-    let mut lines: Vec<Line<'_>> = Vec::new();
     for comment in comments {
+        let selected = *row_index == selected_index;
         let marker = if comment.collapsed { "+ " } else { "- " };
+        let cursor = if selected { "> " } else { "  " };
         let header = format!(
-            "{indent}{marker}{} | {}",
+            "{cursor}{indent}{marker}{} | {}",
             short_id(&comment.object_id),
             short_id(&comment.author_id)
         );
-        lines.push(Line::from(vec![Span::styled(
-            header,
-            Style::default().fg(Color::DarkGray),
-        )]));
+        let style = if selected {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(vec![Span::styled(header, style)]));
+        *row_index = row_index.saturating_add(1);
         if !comment.collapsed {
             for body_line in comment.text.lines() {
-                lines.push(Line::from(format!("{indent}  {body_line}")));
+                lines.push(Line::from(format!("  {indent}{body_line}")));
             }
-            let mut reply_lines = Vec::new();
-            let mut reply_buffer = Buffer::empty(area);
-            render_comments(
+            flatten_comments(
                 &comment.replies,
                 depth.saturating_add(1),
-                area,
-                &mut reply_buffer,
+                selected_index,
+                row_index,
+                lines,
             );
-            for line in reply_buffer.content.chunks(area.width as usize) {
-                let line_text: String = line.iter().map(ratatui::buffer::Cell::symbol).collect();
-                reply_lines.push(Line::from(line_text));
-            }
-            lines.extend(reply_lines);
         }
     }
-    let block = Block::default().borders(Borders::ALL).title("Comments");
-    Paragraph::new(lines).block(block).render(area, buf);
 }
 
 fn short_id(id: &str) -> String {

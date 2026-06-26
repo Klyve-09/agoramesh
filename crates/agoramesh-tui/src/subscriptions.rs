@@ -30,7 +30,9 @@ pub fn save(path: &Path, subscriptions: &Subscriptions) -> Result<(), Error> {
         std::fs::create_dir_all(parent).map_err(Error::StateIo)?;
     }
     let bytes = serde_json::to_vec_pretty(subscriptions).map_err(Error::StateJson)?;
-    std::fs::write(path, bytes).map_err(Error::StateIo)
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, bytes).map_err(Error::StateIo)?;
+    std::fs::rename(tmp_path, path).map_err(Error::StateIo)
 }
 
 #[cfg(test)]

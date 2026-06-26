@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Widget, Wrap};
 
 use crate::app::AppState;
 use crate::models::{AcknowledgedFirstSeen, CategorySummary, FirstSeenWarning, PeerStatus};
@@ -40,8 +40,15 @@ pub(crate) fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         return;
     }
-    let text: Vec<Line<'_>> = state
-        .warnings
+    let text = warning_lines(&state.warnings);
+    let paragraph = Paragraph::new(text)
+        .style(Style::default().fg(Color::Yellow))
+        .wrap(Wrap { trim: true });
+    paragraph.render(area, buf);
+}
+
+fn warning_lines(warnings: &[FirstSeenWarning]) -> Vec<Line<'_>> {
+    warnings
         .iter()
         .map(|warning| match warning {
             FirstSeenWarning::Category {
@@ -52,22 +59,18 @@ pub(crate) fn render_warnings(state: &AppState, area: Rect, buf: &mut Buffer) {
                 Line::from(vec![
                     Span::styled("! ", Style::default().fg(Color::Yellow)),
                     Span::raw(format!(
-                        "First time seeing category '{name}' ({category_id}). Press Enter to acknowledge.",
+                        "First time seeing category '{name}' ({category_id}). Press 'a' to acknowledge.",
                     )),
                 ])
             }
             FirstSeenWarning::Peer { address } => Line::from(vec![
                 Span::styled("! ", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(
-                    "First time seeing peer {address}. Press Enter to acknowledge."
+                    "First time seeing peer {address}. Press 'a' to acknowledge."
                 )),
             ]),
         })
-        .collect();
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Warnings"))
-        .wrap(Wrap { trim: true });
-    paragraph.render(area, buf);
+        .collect()
 }
 
 #[cfg(test)]
@@ -135,6 +138,6 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(text.contains("First time seeing peer"));
-        assert!(text.contains("Warnings"));
+        assert!(text.contains("Press 'a'"));
     }
 }

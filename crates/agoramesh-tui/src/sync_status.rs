@@ -12,14 +12,22 @@ use crate::models::SyncTotals;
 /// Renders the sync status screen.
 pub fn render_sync_status(state: &AppState, area: Rect, buf: &mut Buffer) {
     if state.peers.is_empty() {
-        let empty =
-            Paragraph::new("No peers configured. Add peers with the CLI or a future TUI flow.")
+        let empty = Paragraph::new(
+            "No manual peers configured. The TUI does not run discovery or background sync in Phase 2.",
+        )
                 .block(Block::default().borders(Borders::ALL).title("Sync Status"));
         empty.render(area, buf);
         return;
     }
 
     let mut lines: Vec<Line<'_>> = Vec::new();
+    lines.push(Line::from(
+        "Configured manual peers; no background sync runs in Phase 2.",
+    ));
+    lines.push(Line::from(
+        "Last-run status is shown only after an explicit sync result is wired.",
+    ));
+    lines.push(Line::from(""));
     for peer in &state.peers {
         let status = match peer.last_sync_ok {
             None => "never synced".to_owned(),
@@ -32,15 +40,17 @@ pub fn render_sync_status(state: &AppState, area: Rect, buf: &mut Buffer) {
             name, peer.address, status
         ))]));
     }
-    let totals = format!(
-        "Totals: pulled {} | pushed {} | rejected {}",
-        state.sync_totals.pulled, state.sync_totals.pushed, state.sync_totals.rejected
-    );
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        totals,
-        Style::default().fg(Color::DarkGray),
-    )]));
+    if state.sync_totals != SyncTotals::default() {
+        let totals = format!(
+            "Last explicit sync: pulled {} | pushed {} | rejected {}",
+            state.sync_totals.pulled, state.sync_totals.pushed, state.sync_totals.rejected
+        );
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            totals,
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
     let block = Block::default().borders(Borders::ALL).title("Sync Status");
     Paragraph::new(lines).block(block).render(area, buf);
 }
@@ -69,7 +79,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("No peers configured"));
+        assert!(text.contains("No manual peers configured"));
     }
 
     #[test]
