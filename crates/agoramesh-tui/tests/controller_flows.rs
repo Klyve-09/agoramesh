@@ -14,9 +14,12 @@ use agoramesh_tui::app::{Action, AppState};
 use agoramesh_tui::backend::Backend;
 use agoramesh_tui::controller::handle_action;
 use agoramesh_tui::events::map_event;
+use agoramesh_tui::key_ux::render_key_management;
 use agoramesh_tui::models::{CategorySummary, FeedFocus, FirstSeenWarning, KeyStatus, Screen};
 use chrono::{Timelike, Utc};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 
 #[test]
 fn feed_compose_unicode_preview_submit_refreshes_feed_persistence() {
@@ -387,6 +390,42 @@ fn backup_write_failure_sets_status_and_does_not_exit() {
 }
 
 #[test]
+fn key_management_help_matches_event_bindings() {
+    assert_eq!(
+        map_event(&ctrl(KeyCode::Char('g')), Screen::KeyManagement),
+        Some(Action::GenerateEncryptedKey)
+    );
+    assert_eq!(
+        map_event(&ctrl(KeyCode::Char('d')), Screen::KeyManagement),
+        Some(Action::GenerateDevKey)
+    );
+    assert_eq!(
+        map_event(&ctrl(KeyCode::Char('b')), Screen::KeyManagement),
+        Some(Action::BackupKey)
+    );
+    assert_eq!(
+        map_event(&ctrl(KeyCode::Char('r')), Screen::KeyManagement),
+        Some(Action::RestoreKey)
+    );
+
+    let mut text = render_key_management_text(KeyStatus::Missing);
+    text.push_str(&render_key_management_text(KeyStatus::Locked {
+        public_key_hex: Some("abc".to_owned()),
+    }));
+    text.push_str(&render_key_management_text(KeyStatus::Present {
+        public_key_hex: "abc".to_owned(),
+    }));
+
+    assert!(text.contains("Ctrl+g"));
+    assert!(text.contains("Ctrl+d"));
+    assert!(text.contains("Ctrl+b"));
+    assert!(text.contains("Ctrl+r"));
+    assert!(!text.contains("press g"));
+    assert!(!text.contains("Use d"));
+    assert!(!text.contains("press u"));
+}
+
+#[test]
 fn unknown_key_does_not_change_screen_to_feed() {
     let (backend, _temp_dir) = temp_backend(true);
     let mut state = AppState::new();
@@ -483,4 +522,16 @@ fn assert_status_contains(state: &AppState, needle: &str) {
         state.status_message
     );
     assert_eq!(state.key_input.status, state.status_message);
+}
+
+fn render_key_management_text(key_status: KeyStatus) -> String {
+    let mut state = AppState::new();
+    state.key_status = key_status;
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 96, 24));
+    render_key_management(&state, buffer.area, &mut buffer);
+    buffer
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>()
 }

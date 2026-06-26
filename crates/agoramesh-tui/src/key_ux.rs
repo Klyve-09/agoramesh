@@ -17,8 +17,8 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
             let lines: Vec<Line<'_>> = vec![
                 Line::from("No identity key found."),
                 Line::from(""),
-                Line::from("Type a passphrase, then press g to generate an encrypted key."),
-                Line::from("Use d only when started with --dev-insecure-plaintext-key."),
+                Line::from("Type a passphrase, then press Ctrl+g to generate an encrypted key."),
+                Line::from("Use Ctrl+d only when started with --dev-insecure-plaintext-key."),
                 Line::from(""),
                 Line::from(masked_passphrase_line(state)),
                 Line::from(action_status_line(state)),
@@ -30,7 +30,7 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
             let lines: Vec<Line<'_>> = vec![
                 Line::from("Encrypted identity key is locked."),
                 Line::from(format!("Public key: {public_key}")),
-                Line::from("Type passphrase, then press u or Enter to unlock."),
+                Line::from("Type passphrase, then press Enter to unlock."),
                 Line::from(""),
                 Line::from(masked_passphrase_line(state)),
                 Line::from(action_status_line(state)),
