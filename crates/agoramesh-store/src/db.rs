@@ -132,7 +132,7 @@ impl SqliteStore {
                 .signed_payload()
                 .created_at()
                 .datetime()
-                .to_rfc3339()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
         {
             return Err(StoreError::CorruptStoredMessage {
                 field: "created_at".to_owned(),
@@ -228,7 +228,10 @@ impl Store for SqliteStore {
         let signed = message.signed_payload();
         let id_bytes = message_id.as_bytes();
         let id = id_bytes.as_slice();
-        let created_at = signed.created_at().datetime().to_rfc3339();
+        let created_at = signed
+            .created_at()
+            .datetime()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         self.connection
             .inner
             .execute(

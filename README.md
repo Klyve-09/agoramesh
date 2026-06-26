@@ -8,8 +8,48 @@ A decentralized mesh-messaging network built in Rust.
 - `crates/agoramesh-store` – persistent SQLite-backed storage with verified read paths.
 - `crates/agoramesh-net` – provisional localhost HTTP/JSON direct sync for Phase 1; QUIC/libp2p/gossipsub are deferred.
 - `crates/agoramesh-cli` – command-line entry point.
+- `crates/agoramesh-tui` – minimal ratatui terminal client (Phase 2).
 
 ## Phase 1 boundary
+
+This milestone implements a minimal P2P text prototype. The Phase 1 completion checkpoint is recorded at:
+
+- docs/checkpoints/2026-06-25-phase1-completion.md
+
+Scope:
+
+- Canonical message signing/verification (ADR 0001, ADR 0006).
+- Verified local SQLite storage.
+- Phase 1 typed objects: `user_profile`, `category`, `post`, `comment`, `revocation_certificate`.
+- clap-only CLI: `key`, `category`, `post`, `comment`, `feed`, `peer`, `sync`, `run`.
+- Provisional direct sync over localhost HTTP/JSON between manually configured peers.
+
+## Phase 2 boundary
+
+This milestone adds a minimal terminal UI client. The Phase 2 checkpoint is recorded at:
+
+- docs/checkpoints/2026-06-26-phase2-tui-plan.md
+
+Scope:
+
+- ratatui-based feed view with subscribed categories and posts.
+- Compose flow with category selection, preview, and signed post submission.
+- Thread/comment view with nested replies and collapse support.
+- Subscription, peer/sync status, key management, and first-seen warning panels.
+- Persistence for subscriptions and acknowledged first-seen values.
+
+Run the TUI:
+
+```bash
+cargo run --bin agoramesh-tui -- --data-dir /tmp/agoramesh-tui-data --plaintext
+```
+
+Keys:
+
+- `1` Feed, `2` Subscriptions, `3` Sync status, `4` Key management
+- `n` New post, `t` Thread view
+- `↑`/`k`, `↓`/`j` move, `Enter` select/acknowledge, `Esc` back
+- `Ctrl+q` quit
 
 This milestone implements a minimal P2P text prototype. The Phase 1 completion checkpoint is recorded at:
 
