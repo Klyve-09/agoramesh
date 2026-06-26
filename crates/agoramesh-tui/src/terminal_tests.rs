@@ -1,7 +1,7 @@
 use chrono::Utc;
 
 use super::*;
-use crate::models::{CategorySummary, FirstSeenWarning, Subscriptions};
+use crate::models::{CategorySummary, FirstSeenWarning, Screen, Subscriptions};
 
 #[test]
 fn first_seen_compute_warnings_lists_unacknowledged_categories_and_peers() {
@@ -31,7 +31,7 @@ fn handle_action_acknowledges_first_seen_warning_and_saves_it() {
     };
     let mut state = AppState::new().apply(Action::SetWarnings(vec![warning]));
 
-    let result = handle_action(&backend, &mut state, Action::Select);
+    let result = handle_action(&backend, &mut state, Action::AcknowledgeCurrentWarning);
 
     assert!(result.expect("select action succeeds").is_none());
     assert!(state.warnings.is_empty());
@@ -52,6 +52,7 @@ fn handle_action_submits_compose_and_returns_to_feed() {
     state.screen = Screen::Compose;
     state.compose.category_index = 0;
     state.compose.text = "Hello compose".to_owned();
+    state.compose.preview = true;
 
     let result = handle_action(&backend, &mut state, Action::ComposeSubmit);
 
@@ -87,6 +88,7 @@ fn handle_action_toggles_selected_subscription_and_saves_it() {
     let category = sample_category("cat-1");
     let category_id = category.category_id.clone();
     let mut state = AppState::new();
+    state.screen = Screen::Subscriptions;
     state.categories = vec![category];
 
     let result = handle_action(&backend, &mut state, Action::ToggleSelectedSubscription);
@@ -106,6 +108,9 @@ fn handle_action_selects_the_newest_post_thread_from_feed() {
     let category = sample_category("cat-1");
     let mut state = AppState::new();
     state.categories = vec![category.clone()];
+    state.subscriptions = Subscriptions {
+        category_ids: vec![category.category_id.clone()],
+    };
     state.posts.insert(
         category.category_id.clone(),
         vec![
@@ -141,7 +146,7 @@ fn handle_action_select_on_feed_without_posts_sets_status_message() {
     assert_eq!(state.screen, Screen::Feed);
     assert_eq!(
         state.status_message.as_deref(),
-        Some("No posts available for the selected category")
+        Some("No post selected in the current feed category")
     );
 }
 

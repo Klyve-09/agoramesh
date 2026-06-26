@@ -43,14 +43,17 @@ fn map_key(key: KeyEvent, screen: Screen) -> Option<Action> {
             KeyCode::Char('3') => Some(Action::SetScreen(Screen::SyncStatus)),
             KeyCode::Char('4') => Some(Action::SetScreen(Screen::KeyManagement)),
             KeyCode::Char('n') => Some(Action::SetScreen(Screen::Compose)),
+            KeyCode::Char('a') => Some(Action::AcknowledgeCurrentWarning),
             KeyCode::Char('t') | KeyCode::Enter => Some(Action::Select),
             KeyCode::Char('s') => Some(Action::ToggleSelectedSubscription),
+            KeyCode::Tab | KeyCode::Left | KeyCode::Right => Some(Action::ToggleFeedFocus),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveSelection(-1)),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelection(1)),
             _ => None,
         },
         Screen::Thread => match key.code {
             KeyCode::Esc => Some(Action::Back),
+            KeyCode::Char('a') => Some(Action::AcknowledgeCurrentWarning),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveSelection(-1)),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelection(1)),
             KeyCode::Char(' ') => Some(Action::ToggleCollapse),
@@ -58,18 +61,39 @@ fn map_key(key: KeyEvent, screen: Screen) -> Option<Action> {
             _ => None,
         },
         Screen::KeyManagement => match key.code {
-            KeyCode::Char('g') => Some(Action::GenerateDevKey),
-            KeyCode::Esc | KeyCode::Backspace => Some(Action::Back),
+            KeyCode::Backspace => Some(Action::KeyBackspace),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::AcknowledgeCurrentWarning)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::BackupKey)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::GenerateDevKey)
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::GenerateEncryptedKey)
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::RestoreKey)
+            }
+            KeyCode::Enter => Some(Action::UnlockKey),
+            KeyCode::Esc => Some(Action::Back),
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::KeyAppend(ch))
+            }
             _ => None,
         },
         Screen::Subscriptions => match key.code {
-            KeyCode::Char('s') | KeyCode::Enter => Some(Action::ToggleSelectedSubscription),
+            KeyCode::Char('a') => Some(Action::AcknowledgeCurrentWarning),
+            KeyCode::Char(' ' | 's') | KeyCode::Enter => Some(Action::ToggleSelectedSubscription),
             KeyCode::Esc | KeyCode::Backspace => Some(Action::Back),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveSelection(-1)),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelection(1)),
             _ => None,
         },
         Screen::SyncStatus => match key.code {
+            KeyCode::Char('a') => Some(Action::AcknowledgeCurrentWarning),
             KeyCode::Esc | KeyCode::Backspace => Some(Action::Back),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveSelection(-1)),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelection(1)),

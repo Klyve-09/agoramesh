@@ -3,6 +3,7 @@
 pub mod app;
 pub mod backend;
 pub mod compose;
+pub mod controller;
 pub mod error;
 pub mod events;
 pub mod feed;
