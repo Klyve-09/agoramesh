@@ -39,7 +39,28 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- In progress; latest checks must be recorded in the PR before review.
+- 2026-06-26 PR #5 head `2b5bf96`: Phase 2 blocker fixes verified after the
+  subscription cache, compose selection, key overwrite protection, and terminal
+  setup cleanup changes.
+- Automated checks passed:
+  - `cargo fmt --check`
+  - `cargo check --workspace --all-targets`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace --all-targets`
+  - `./dev ci`
+- Focused regressions passed:
+  - `subscription_toggle_loads_existing_feed_without_restart`
+  - `compose_submit_selects_submitted_category_and_new_post`
+  - `encrypted_key_generate_does_not_overwrite_existing_key`
+  - `dev_plaintext_key_generate_does_not_overwrite_existing_key`
+  - `terminal_setup_cleanup_attempts_all_completed_steps_after_failure`
+- Manual TUI smoke pass in a throwaway data directory confirmed:
+  - subscribing to a category with an existing post makes that post visible in
+    Feed without restarting;
+  - composing in the second subscribed category returns to Feed with the new post
+    selected in the posts pane;
+  - Ctrl+d on an existing plaintext dev key leaves the public key intact and
+    shows “Key overwrite disabled; use backup/restore instead”.
 
 ## Remaining before merge
 
