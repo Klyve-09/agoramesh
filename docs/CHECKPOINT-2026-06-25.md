@@ -1,5 +1,10 @@
 # AgoraMesh Checkpoint — 2026-06-25
 
+> **Note**
+> This document records the pre-Phase 1 planning checkpoint.
+> The Phase 1 implementation completion checkpoint is:
+> `docs/checkpoints/2026-06-25-phase1-completion.md`
+
 ## 현재 상태
 
 Phase 0 문서화 및 Phase 1 코딩 전 ADR/스펙 작성이 완료되었다.  
