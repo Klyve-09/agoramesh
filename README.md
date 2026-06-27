@@ -26,9 +26,10 @@ Scope:
 
 ## Phase 2 boundary
 
-This milestone adds a minimal terminal UI client. The Phase 2 checkpoint is recorded at:
+This milestone adds a minimal terminal UI client. The Phase 2 plan and completion checkpoints are recorded at:
 
 - docs/checkpoints/2026-06-26-phase2-tui-plan.md
+- docs/checkpoints/2026-06-27-phase2-completion.md
 
 Scope:
 
