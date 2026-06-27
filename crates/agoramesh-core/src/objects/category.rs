@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical;
 use crate::message::{self, Message, PROTOCOL_VERSION};
 use crate::objects::category_id::CategoryIdParts;
-use crate::objects::{canonical_body, pubkey_hex, sha256_hex};
+use crate::objects::{canonical_body, pubkey_hex, sha256_hex, timestamp_seconds};
 
 /// Minimal Phase 1 category charter anchor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -54,6 +54,7 @@ pub fn create(
     description: impl Into<String>,
     initial_charter_text: impl Into<String>,
 ) -> Result<Message, message::Error> {
+    let created_at = timestamp_seconds(created_at);
     let display_name = display_name.into();
     let description = description.into();
     let initial_charter = CharterAnchorBody {

@@ -159,6 +159,23 @@ fn category_id_golden_vector_uses_spec_field_order() {
 }
 
 #[test]
+fn category_id_canonical_bytes_use_utc_seconds_precision() {
+    let created_at = DateTime::parse_from_rfc3339("2024-01-02T03:04:05.987654321+00:00")
+        .expect("parse fixture time")
+        .with_timezone(&Utc);
+    let parts = category_id::CategoryIdParts {
+        creator_pubkey: CATEGORY_ID_FIXTURE_CREATOR,
+        display_name: "Local Tools",
+        created_at: &created_at,
+        initial_charter_hash: CATEGORY_ID_FIXTURE_CHARTER_HASH,
+    };
+
+    let canonical_bytes = category_id::canonical_bytes(&parts).expect("canonical bytes");
+
+    assert_eq!(canonical_bytes, CATEGORY_ID_FIXTURE_CANONICAL.as_bytes());
+}
+
+#[test]
 fn post_and_comment_builders_use_category_scope_and_typed_parent() {
     let keypair = Keypair::generate();
     let category_id = "category-123";

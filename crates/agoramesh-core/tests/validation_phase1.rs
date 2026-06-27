@@ -68,6 +68,28 @@ impl Clock for FixedClock {
     }
 }
 
+fn signed_revocation_with_replacement(
+    keypair: &Keypair,
+    replacement_pubkey: Option<String>,
+    effective_at: DateTime<Utc>,
+) -> Message {
+    let revoked_pubkey = to_hex(keypair.identity().verifying_key().as_bytes());
+    let body = revocation_certificate::Body {
+        revoked_pubkey: revoked_pubkey.clone(),
+        replacement_pubkey,
+        effective_at,
+        reason_code: "key_compromised".to_owned(),
+    };
+    Message::create(
+        keypair,
+        "revocation_certificate",
+        effective_at,
+        format!("revocation:{revoked_pubkey}"),
+        serde_json::to_vec(&body).expect("serialize body"),
+    )
+    .expect("create revocation")
+}
+
 fn tamper_signature(message: &Message) -> Message {
     let mut value = serde_json::to_value(message).expect("serialize message");
     let signature = value
@@ -212,6 +234,71 @@ fn category_rejects_tampered_initial_charter_hash() {
 }
 
 #[test]
+fn category_rejects_subsecond_created_at() {
+    let keypair = Keypair::generate();
+    let message = category::create(
+        &keypair,
+        utc(1_700_000_000),
+        "Local Tools",
+        "discussion",
+        "charter text",
+    )
+    .expect("create");
+    let tampered = tamper_body_json(
+        &message,
+        (
+            "created_at",
+            serde_json::Value::String("2023-11-14T22:13:20.123Z".to_owned()),
+        ),
+    );
+
+    assert!(matches!(
+        validation::validate_phase1_message(&tampered),
+        Err(validation::Error::InvalidTimestampPrecision { field }) if field == "created_at"
+    ));
+}
+
+#[test]
+fn category_rejects_subsecond_initial_charter_created_at() {
+    let keypair = Keypair::generate();
+    let message = category::create(
+        &keypair,
+        utc(1_700_000_000),
+        "Local Tools",
+        "discussion",
+        "charter text",
+    )
+    .expect("create");
+    let mut value: serde_json::Value = serde_json::to_value(&message).expect("serialize");
+    let payload = value.get_mut("signed_payload").expect("signed_payload");
+    let body_b64 = payload
+        .get_mut("body")
+        .and_then(|body| body.as_str())
+        .expect("body is base64 string");
+    let mut body: serde_json::Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(body_b64)
+            .expect("decode body"),
+    )
+    .expect("body json");
+    body["initial_charter"]["created_at"] =
+        serde_json::Value::String("2023-11-14T22:13:20.123Z".to_owned());
+    let tampered_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&body).expect("encode body"));
+    payload
+        .as_object_mut()
+        .expect("payload object")
+        .insert("body".to_owned(), serde_json::Value::String(tampered_b64));
+    let tampered = serde_json::from_value(value).expect("deserialize tampered");
+
+    assert!(matches!(
+        validation::validate_phase1_message(&tampered),
+        Err(validation::Error::InvalidTimestampPrecision { field })
+            if field == "initial_charter.created_at"
+    ));
+}
+
+#[test]
 fn post_validates() {
     let keypair = Keypair::generate();
     let message =
@@ -297,6 +384,33 @@ fn revocation_certificate_rejects_third_party_revocation() {
         validation::validate_phase1_message(&tampered),
         Err(validation::Error::AuthorMismatch { field, .. }) if field == "revoked_pubkey"
     ));
+}
+
+#[test]
+fn revocation_certificate_rejects_non_hex_replacement_pubkey_for_acceptance() {
+    let keypair = Keypair::generate();
+    let effective_at = utc(1_700_000_010);
+    let message = signed_revocation_with_replacement(&keypair, Some("g".repeat(64)), effective_at);
+    let clock = FixedClock { now: effective_at };
+    let context = acceptance::AcceptanceContext::phase1(&clock);
+
+    assert!(matches!(
+        acceptance::validate_phase1_for_acceptance(&message, &context),
+        Err(acceptance::Error::Semantic(validation::Error::InvalidHex { field, .. }))
+            if field == "replacement_pubkey"
+    ));
+}
+
+#[test]
+fn revocation_certificate_accepts_lowercase_hex_replacement_pubkey() {
+    let keypair = Keypair::generate();
+    let message = signed_revocation_with_replacement(
+        &keypair,
+        Some("0123456789abcdef".repeat(4)),
+        utc(1_700_000_010),
+    );
+
+    validation::validate_phase1_message(&message).expect("validate");
 }
 
 #[test]
