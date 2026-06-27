@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::message::{self, Message};
-use crate::objects::{canonical_body, pubkey_hex};
+use crate::objects::{canonical_body, pubkey_hex, timestamp_seconds};
 
 /// Signed body for a user profile object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -27,6 +27,7 @@ pub fn create(
     display_name: impl Into<String>,
     bio: Option<impl Into<String>>,
 ) -> Result<Message, message::Error> {
+    let created_at = timestamp_seconds(created_at);
     let body = Body {
         display_name: display_name.into(),
         bio: bio.map(Into::into),

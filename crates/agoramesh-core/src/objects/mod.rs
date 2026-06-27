@@ -1,13 +1,17 @@
 //! Typed Phase 1 object builders.
 
+use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 use crate::message::{self, Body};
 
+pub mod acceptance;
 pub mod category;
+pub mod category_id;
 pub mod comment;
 pub mod post;
+pub mod projection;
 pub mod revocation_certificate;
 pub mod user_profile;
 pub mod validation;
@@ -29,6 +33,10 @@ where
     canonical::to_vec(value)
         .map(Body::from)
         .map_err(|error| message::Error::CanonicalJson(error.to_string()))
+}
+
+pub(crate) fn timestamp_seconds(value: DateTime<Utc>) -> DateTime<Utc> {
+    value.with_nanosecond(0).unwrap_or(value)
 }
 
 pub(crate) fn pubkey_hex(pubkey: &[u8; 32]) -> String {

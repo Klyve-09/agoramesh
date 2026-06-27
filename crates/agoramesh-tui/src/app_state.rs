@@ -21,7 +21,7 @@ impl AppState {
 
     fn list_len(&self) -> usize {
         match self.screen {
-            Screen::Feed => self.visible_feed_categories().len(),
+            Screen::Feed => self.visible_feed_category_count(),
             Screen::Subscriptions => self.categories.len(),
             Screen::SyncStatus => self.peers.len(),
             Screen::Thread => self
@@ -38,7 +38,7 @@ impl AppState {
                 self.selected_category_index = moved_index(
                     self.selected_category_index,
                     delta,
-                    self.visible_feed_categories().len(),
+                    self.visible_feed_category_count(),
                 );
                 self.clamp_feed_post_index();
             }
@@ -78,19 +78,23 @@ impl AppState {
     }
 
     pub(crate) fn visible_feed_categories(&self) -> Vec<&CategorySummary> {
-        self.categories
-            .iter()
-            .filter(|category| {
-                self.subscriptions
-                    .category_ids
-                    .contains(&category.category_id)
-            })
-            .collect()
+        self.visible_feed_categories_iter().collect()
+    }
+
+    pub(crate) fn visible_feed_categories_iter(&self) -> impl Iterator<Item = &CategorySummary> {
+        self.categories.iter().filter(|category| {
+            self.subscriptions
+                .category_ids
+                .contains(&category.category_id)
+        })
+    }
+
+    pub(crate) fn visible_feed_category_count(&self) -> usize {
+        self.visible_feed_categories_iter().count()
     }
 
     pub(crate) fn selected_feed_category(&self) -> Option<&CategorySummary> {
-        self.visible_feed_categories()
-            .into_iter()
+        self.visible_feed_categories_iter()
             .nth(self.selected_category_index)
     }
 
@@ -105,7 +109,7 @@ impl AppState {
     }
 
     pub(crate) fn clamp_feed_post_index(&mut self) {
-        let categories_len = self.visible_feed_categories().len();
+        let categories_len = self.visible_feed_category_count();
         if categories_len == 0 {
             self.selected_category_index = 0;
             self.selected_post_index = 0;

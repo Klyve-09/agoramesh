@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::message::{self, Message, MessageId};
-use crate::objects::{ParentKind, canonical_body};
+use crate::objects::{ParentKind, canonical_body, timestamp_seconds};
 
 /// Signed body for a comment object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -35,6 +35,7 @@ pub fn create(
     text: impl Into<String>,
     created_at: DateTime<Utc>,
 ) -> Result<Message, message::Error> {
+    let created_at = timestamp_seconds(created_at);
     let category_id = category_id.into();
     let body = Body {
         category_id: category_id.clone(),

@@ -45,6 +45,8 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 `crates/agoramesh-store/src/db.rs`: new writes use a canonical `Z` suffix for SQLite `created_at` metadata, while old Phase 1 rows with `+00:00` remain readable through RFC3339 parsed-instant comparison. The migration path does not rewrite signed payloads or object IDs.
 
+`category_id` derivation now follows `docs/specs/category-id.md` exactly: the five-field preimage is encoded in fixed spec order instead of using the shared sorted-key canonical JSON encoder. This is protocol-visible for newly created categories. Existing local test data whose category IDs were produced by the previous sorted-key implementation will not validate as the same category identity and should be regenerated for Phase 2 review fixtures.
+
 ## Verification
 
 - Previous review baseline: 2026-06-26 PR #5 code head `e14ed9a` verified

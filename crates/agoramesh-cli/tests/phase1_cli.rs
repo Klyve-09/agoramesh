@@ -159,6 +159,45 @@ fn feed_human_output_prints_created_at_kind_and_object_id() {
 }
 
 #[test]
+fn post_create_rejects_phase1_invalid_body_before_storage() {
+    let data_dir = tempfile::tempdir().expect("create tempdir");
+    let key_path = data_dir.path().join("identity.key");
+    let data_dir_arg = path_text(data_dir.path());
+    let key_path_arg = path_text(&key_path);
+
+    generate_plaintext_key(data_dir_arg, key_path_arg);
+    let category_id = "a".repeat(64);
+
+    Command::cargo_bin("agoramesh-cli")
+        .expect("binary exists")
+        .args([
+            "--data-dir",
+            data_dir_arg,
+            "--key-path",
+            key_path_arg,
+            "--dev-insecure-plaintext-key",
+            "post",
+            "create",
+            "--category-id",
+            &category_id,
+            "--text",
+            "",
+            "--created-at",
+            POST_CREATED_AT,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("text must not be empty"));
+
+    let feed = run_json(
+        Command::cargo_bin("agoramesh-cli")
+            .expect("binary exists")
+            .args(["--data-dir", data_dir_arg, "feed", &category_id, "--json"]),
+    );
+    assert!(feed.as_array().expect("feed array").is_empty());
+}
+
+#[test]
 fn sync_without_peers_prints_zero_json_totals() {
     let data_dir = tempfile::tempdir().expect("create tempdir");
 

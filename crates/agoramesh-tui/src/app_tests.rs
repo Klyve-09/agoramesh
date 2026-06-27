@@ -84,3 +84,39 @@ fn toggling_selected_subscription_adds_and_removes_the_selected_category() {
     let state = state.apply(Action::ToggleSelectedSubscription);
     assert!(state.subscriptions.category_ids.is_empty());
 }
+
+#[test]
+fn feed_selection_helpers_use_only_subscribed_categories() {
+    let mut state = AppState::new();
+    state.categories = vec![
+        CategorySummary {
+            object_id: "oid-1".to_owned(),
+            display_name: "General".to_owned(),
+            description: String::new(),
+            category_id: "cat-1".to_owned(),
+            created_at: chrono::Utc::now(),
+        },
+        CategorySummary {
+            object_id: "oid-2".to_owned(),
+            display_name: "Random".to_owned(),
+            description: String::new(),
+            category_id: "cat-2".to_owned(),
+            created_at: chrono::Utc::now(),
+        },
+    ];
+    state.subscriptions.category_ids = vec!["cat-2".to_owned()];
+    state.selected_category_index = 5;
+    state.selected_post_index = 9;
+
+    state.clamp_feed_post_index();
+
+    assert_eq!(state.visible_feed_category_count(), 1);
+    assert_eq!(state.selected_category_index, 0);
+    assert_eq!(
+        state
+            .selected_feed_category()
+            .map(|category| category.category_id.as_str()),
+        Some("cat-2")
+    );
+    assert_eq!(state.selected_post_index, 0);
+}

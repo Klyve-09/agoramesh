@@ -304,6 +304,47 @@ async fn server_omits_stale_far_future_object() {
 }
 
 #[tokio::test]
+async fn server_does_not_serve_phase1_invalid_stored_object() {
+    let clock = fixed_clock();
+    let now = clock.now();
+    let category = category_message(now, "Category");
+    let scope = category.signed_payload().scope().to_owned();
+    let keypair = Keypair::generate();
+    let empty_text = post_message(&keypair, &scope, now, "");
+
+    let mut store = sqlite_store();
+    store
+        .insert(empty_text.clone(), &clock)
+        .expect("generic store accepts integrity-valid object");
+
+    let (addr, handle) = spawn_server(store, Arc::new(clock)).await;
+    let client = reqwest::Client::new();
+    let base_url = format!("http://{addr}");
+
+    let objects: Vec<Message> = client
+        .get(format!("{base_url}/objects"))
+        .query(&[("scope", &scope)])
+        .send()
+        .await
+        .expect("send list request")
+        .error_for_status()
+        .expect("list succeeds")
+        .json()
+        .await
+        .expect("decode objects");
+    assert!(objects.is_empty());
+
+    let get_response = client
+        .get(format!("{base_url}/objects/{}", empty_text.id().to_hex()))
+        .send()
+        .await
+        .expect("send get request");
+    assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn sync_with_peer_pulls_remote_objects_dedupes_and_pushes_local_objects() {
     let now = fixed_clock().now();
     let category = category_message(now, "Category");
@@ -407,6 +448,52 @@ async fn sync_does_not_propagate_clock_skew_too_large() {
         .list_by_scope(&scope, &sync_clock)
         .expect("list local messages");
     assert_eq!(local_messages, vec![normal]);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn sync_counts_local_phase1_invalid_object_as_rejected_and_does_not_push() {
+    let now = fixed_clock().now();
+    let category = category_message(now, "Category");
+    let scope = category.signed_payload().scope().to_owned();
+    let keypair = Keypair::generate();
+    let invalid = post_message(&keypair, &scope, now, "");
+
+    let clock = fixed_clock();
+    let remote_store = sqlite_store();
+    let mut local_store = sqlite_store();
+    local_store
+        .insert(invalid, &clock)
+        .expect("generic store accepts integrity-valid object");
+
+    let (addr, handle) = spawn_server(remote_store, Arc::new(FixedClock { now })).await;
+
+    let stats = sync_with_peer(&format!("http://{addr}"), &mut local_store, &clock, &scope)
+        .await
+        .expect("sync succeeds");
+    assert_eq!(
+        stats,
+        SyncStats {
+            objects_pulled: 0,
+            objects_pushed: 0,
+            objects_rejected: 1,
+        }
+    );
+
+    let client = reqwest::Client::new();
+    let objects: Vec<Message> = client
+        .get(format!("http://{addr}/objects"))
+        .query(&[("scope", &scope)])
+        .send()
+        .await
+        .expect("send list request")
+        .error_for_status()
+        .expect("list succeeds")
+        .json()
+        .await
+        .expect("decode objects");
+    assert!(objects.is_empty());
 
     handle.abort();
 }

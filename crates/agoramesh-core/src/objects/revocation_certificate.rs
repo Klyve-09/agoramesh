@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::message::{self, Message};
-use crate::objects::{canonical_body, pubkey_hex};
+use crate::objects::{canonical_body, pubkey_hex, timestamp_seconds};
 
 /// Signed body for a revocation certificate object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -45,6 +45,7 @@ pub fn create(
     effective_at: DateTime<Utc>,
     reason_code: impl Into<String>,
 ) -> Result<Message, message::Error> {
+    let effective_at = timestamp_seconds(effective_at);
     let revoked_pubkey = pubkey_hex(keypair.identity().verifying_key().as_bytes());
     let body = Body {
         replacement_pubkey: replacement_pubkey.map(|pubkey| pubkey_hex(&pubkey)),

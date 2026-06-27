@@ -105,11 +105,12 @@ fn render_post_list(state: &AppState, area: Rect, buf: &mut Buffer) {
 }
 
 fn selected_index(state: &AppState) -> Option<usize> {
-    if state.screen == Screen::Feed && !state.visible_feed_categories().is_empty() {
+    let visible_count = state.visible_feed_category_count();
+    if state.screen == Screen::Feed && visible_count > 0 {
         Some(
             state
                 .selected_category_index
-                .min(state.visible_feed_categories().len().saturating_sub(1)),
+                .min(visible_count.saturating_sub(1)),
         )
     } else {
         None

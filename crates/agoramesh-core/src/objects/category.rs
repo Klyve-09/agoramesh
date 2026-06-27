@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 use crate::message::{self, Message, PROTOCOL_VERSION};
-use crate::objects::{canonical_body, pubkey_hex, sha256_hex};
+use crate::objects::category_id::CategoryIdParts;
+use crate::objects::{canonical_body, pubkey_hex, sha256_hex, timestamp_seconds};
 
 /// Minimal Phase 1 category charter anchor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,15 +42,6 @@ pub struct Body {
     pub initial_charter: CharterAnchorBody,
 }
 
-#[derive(Serialize)]
-struct CategoryIdInput<'a> {
-    protocol_version: u32,
-    creator_pubkey: &'a str,
-    display_name: &'a str,
-    created_at: &'a DateTime<Utc>,
-    initial_charter_hash: &'a str,
-}
-
 /// Creates a signed category object with a deterministic category ID.
 ///
 /// # Errors
@@ -62,6 +54,7 @@ pub fn create(
     description: impl Into<String>,
     initial_charter_text: impl Into<String>,
 ) -> Result<Message, message::Error> {
+    let created_at = timestamp_seconds(created_at);
     let display_name = display_name.into();
     let description = description.into();
     let initial_charter = CharterAnchorBody {
@@ -74,17 +67,13 @@ pub fn create(
             .map_err(|error| message::Error::CanonicalJson(error.to_string()))?,
     );
     let creator_pubkey = pubkey_hex(keypair.identity().verifying_key().as_bytes());
-    let input = CategoryIdInput {
-        protocol_version: PROTOCOL_VERSION,
+    let input = CategoryIdParts {
         creator_pubkey: &creator_pubkey,
         display_name: &display_name,
         created_at: &created_at,
         initial_charter_hash: &initial_charter_hash,
     };
-    let category_id = sha256_hex(
-        &canonical::to_vec(&input)
-            .map_err(|error| message::Error::CanonicalJson(error.to_string()))?,
-    );
+    let category_id = crate::objects::category_id::compute(&input)?;
     let body = Body {
         protocol_version: PROTOCOL_VERSION,
         creator_pubkey,

@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use agoramesh_core::objects::validation;
-use agoramesh_core::{Clock, Message, MessageId, Verification};
+use agoramesh_core::objects::acceptance::{self, AcceptanceContext};
+use agoramesh_core::{Clock, Message, MessageId};
 use agoramesh_store::{InsertResult, SqliteStore, Store};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -72,9 +72,7 @@ enum HandlerError {
     #[error("object not found")]
     NotFound,
     #[error("object rejected: {0}")]
-    Rejected(agoramesh_core::message::Error),
-    #[error("object validation failed: {0}")]
-    Invalid(validation::Error),
+    Rejected(acceptance::Error),
     #[error("duplicate object")]
     Duplicate,
     #[error("store lock poisoned")]
@@ -125,6 +123,7 @@ pub async fn sync_with_peer(
         .build()?;
     let base_url = peer_url.trim_end_matches('/');
     let local_messages = store.list_by_scope(scope, clock)?;
+    let context = AcceptanceContext::phase1(clock);
     let mut stats = SyncStats::default();
 
     let remote_messages: Vec<Message> = client
@@ -136,21 +135,7 @@ pub async fn sync_with_peer(
         .json()
         .await?;
     for message in remote_messages {
-        match message.verify() {
-            Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
-            Verification::Rejected(_) => {
-                stats.objects_rejected = stats.objects_rejected.saturating_add(1);
-                continue;
-            }
-        }
-        match message.classify_clock_skew(clock) {
-            Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
-            Verification::Rejected(_) => {
-                stats.objects_rejected = stats.objects_rejected.saturating_add(1);
-                continue;
-            }
-        }
-        if let Err(_error) = validation::validate_phase1_message(&message) {
+        if acceptance::validate_phase1_for_acceptance(&message, &context).is_err() {
             stats.objects_rejected = stats.objects_rejected.saturating_add(1);
             continue;
         }
@@ -163,6 +148,10 @@ pub async fn sync_with_peer(
     }
 
     for message in local_messages {
+        if acceptance::validate_phase1_for_acceptance(&message, &context).is_err() {
+            stats.objects_rejected = stats.objects_rejected.saturating_add(1);
+            continue;
+        }
         let response = client
             .post(format!("{base_url}/objects"))
             .json(&message)
@@ -204,12 +193,16 @@ async fn list_objects(
     State(state): State<DirectSyncState>,
     Query(query): Query<ObjectsQuery>,
 ) -> Result<Json<Vec<Message>>, HandlerError> {
+    let context = AcceptanceContext::phase1(state.clock.as_ref());
     let messages = {
         let store = lock_store(&state)?;
         store
             .list_by_scope(&query.scope, state.clock.as_ref())
             .map_err(HandlerError::Store)?
-    };
+    }
+    .into_iter()
+    .filter(|message| acceptance::validate_phase1_for_acceptance(message, &context).is_ok())
+    .collect();
     Ok(Json(messages))
 }
 
@@ -218,6 +211,7 @@ async fn get_object(
     Path(object_id_hex): Path<String>,
 ) -> Result<Json<Message>, HandlerError> {
     let id = MessageId::from_hex(&object_id_hex).map_err(|_error| HandlerError::NotFound)?;
+    let context = AcceptanceContext::phase1(state.clock.as_ref());
     let message = {
         let store = lock_store(&state)?;
         store
@@ -225,6 +219,8 @@ async fn get_object(
             .map_err(HandlerError::Store)?
             .ok_or(HandlerError::NotFound)?
     };
+    acceptance::validate_phase1_for_acceptance(&message, &context)
+        .map_err(|_error| HandlerError::NotFound)?;
     Ok(Json(message))
 }
 
@@ -232,22 +228,18 @@ async fn post_object(
     State(state): State<DirectSyncState>,
     Json(message): Json<Message>,
 ) -> Result<(StatusCode, Json<Message>), HandlerError> {
-    match message.verify() {
-        Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
-        Verification::Rejected(error) => return Err(HandlerError::Rejected(error)),
-    }
-    match message.classify_clock_skew(state.clock.as_ref()) {
-        Verification::Accepted | Verification::AcceptedWithWarning(_) => {}
-        Verification::Rejected(error) => return Err(HandlerError::Rejected(error)),
-    }
-    validation::validate_phase1_message(&message).map_err(HandlerError::Invalid)?;
+    let context = AcceptanceContext::phase1(state.clock.as_ref());
+    acceptance::validate_phase1_for_acceptance(&message, &context)
+        .map_err(HandlerError::Rejected)?;
     let mut store = lock_store(&state)?;
     match store.insert(message.clone(), state.clock.as_ref()) {
         Ok(InsertResult::Inserted) => Ok((StatusCode::CREATED, Json(message))),
         Ok(InsertResult::Duplicate) | Err(agoramesh_store::Error::DuplicateObjectId(_)) => {
             Err(HandlerError::Duplicate)
         }
-        Err(agoramesh_store::Error::Rejected(error)) => Err(HandlerError::Rejected(error)),
+        Err(agoramesh_store::Error::Rejected(error)) => {
+            Err(HandlerError::Rejected(acceptance::Error::Integrity(error)))
+        }
         Err(error) => Err(HandlerError::Store(error)),
     }
 }
@@ -260,9 +252,7 @@ impl IntoResponse for HandlerError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
-            Self::Rejected(_) | Self::Invalid(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY.into_response()
-            }
+            Self::Rejected(_) => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
             Self::Duplicate => StatusCode::CONFLICT.into_response(),
             Self::StoreLock | Self::Store(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
