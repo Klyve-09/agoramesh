@@ -174,6 +174,7 @@ impl AppState {
             | Action::ComposeSubmit
             | Action::UnlockKey
             | Action::GenerateEncryptedKey
+            | Action::GenerateDevKey
             | Action::BackupKey
             | Action::RestoreKey
             | Action::AcknowledgeCurrentWarning => {}
@@ -186,7 +187,6 @@ impl AppState {
             Action::MoveSelection(delta) => {
                 self.move_selection(delta);
             }
-            Action::GenerateDevKey => Self::ignore_generate_dev_key(),
             Action::KeyAppend(ch) => {
                 self.key_input.passphrase.push(ch);
             }
@@ -237,8 +237,6 @@ impl AppState {
         self
     }
 
-    const fn ignore_generate_dev_key() {}
-
     fn toggle_selected_subscription(&mut self) {
         let Some(category_id) = self.selected_category_id_for_subscription_toggle() else {
             return;
@@ -284,15 +282,17 @@ impl AppState {
         self.warnings.retain(|item| item != &warning);
         match warning {
             FirstSeenWarning::Category { category_id, .. } => {
-                if !self.acknowledged.categories.contains(&category_id) {
-                    self.acknowledged.categories.push(category_id);
-                }
+                push_unique(&mut self.acknowledged.categories, category_id);
             }
             FirstSeenWarning::Peer { address } => {
-                if !self.acknowledged.peers.contains(&address) {
-                    self.acknowledged.peers.push(address);
-                }
+                push_unique(&mut self.acknowledged.peers, address);
             }
         }
+    }
+}
+
+fn push_unique<T: PartialEq>(items: &mut Vec<T>, item: T) {
+    if !items.contains(&item) {
+        items.push(item);
     }
 }

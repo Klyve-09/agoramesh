@@ -8,15 +8,18 @@
     reason = "test fixtures may fail fast on setup errors"
 )]
 
+mod support;
+
 use agoramesh_core::objects::{ParentKind, category, comment, post};
 use agoramesh_store::Store;
 use agoramesh_tui::app::AppState;
 use agoramesh_tui::backend::Backend;
 use agoramesh_tui::controller::handle_action;
-use agoramesh_tui::events::map_event;
-use agoramesh_tui::models::{CategorySummary, FeedFocus, FirstSeenWarning, Screen};
-use chrono::{Timelike, Utc};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use agoramesh_tui::models::{FeedFocus, FirstSeenWarning, Screen};
+use chrono::Utc;
+use crossterm::event::KeyCode;
+
+use support::{dispatch, press, state_with_category, stored_category, temp_backend, truncate};
 
 #[test]
 fn feed_compose_unicode_preview_submit_refreshes_feed_persistence() {
@@ -232,53 +235,4 @@ fn subscriptions_and_warning_acknowledgement_persist_after_reopen() {
         reopened.load_acknowledged().expect("ack").categories,
         vec![category.category_id]
     );
-}
-
-fn dispatch(backend: &Backend, state: &mut AppState, event: &Event) {
-    let action = map_event(event, state.screen).expect("event maps to action");
-    handle_action(backend, state, action).expect("handle action");
-}
-
-fn temp_backend(plaintext: bool) -> (Backend, tempfile::TempDir) {
-    let temp_dir = tempfile::tempdir().unwrap_or_else(|err| panic!("create tempdir: {err}"));
-    let backend = Backend::open(Some(temp_dir.path().to_path_buf()), plaintext)
-        .unwrap_or_else(|err| panic!("open backend: {err}"));
-    (backend, temp_dir)
-}
-
-fn state_with_category(category: CategorySummary) -> AppState {
-    let mut state = AppState::new();
-    state.categories = vec![category.clone()];
-    state.subscriptions.category_ids = vec![category.category_id];
-    state
-}
-
-fn stored_category(backend: &Backend, name: &str) -> CategorySummary {
-    let keypair = agoramesh_core::Keypair::generate();
-    let created_at = truncate(Utc::now());
-    let message = category::create(&keypair, created_at, name, name, "Charter")
-        .unwrap_or_else(|err| panic!("create category: {err}"));
-    let summary = CategorySummary {
-        object_id: message.id().to_hex(),
-        display_name: name.to_owned(),
-        description: name.to_owned(),
-        category_id: message.signed_payload().scope().to_owned(),
-        created_at,
-    };
-    backend
-        .store()
-        .expect("store")
-        .insert(message, &agoramesh_core::SystemClock)
-        .expect("insert category");
-    summary
-}
-
-fn truncate(value: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
-    value
-        .with_nanosecond(0)
-        .unwrap_or_else(|| panic!("truncating to seconds is valid"))
-}
-
-fn press(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
 }

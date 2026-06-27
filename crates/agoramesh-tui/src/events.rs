@@ -107,6 +107,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn non_key_events_are_ignored() {
+        assert_eq!(map_event(&Event::Resize(10, 10), Screen::Feed), None);
+    }
+
+    #[test]
     fn key_events_map_to_actions() {
         assert_eq!(
             map_event(&press(KeyCode::Char('1')), Screen::Feed),
@@ -150,11 +155,120 @@ mod tests {
         );
     }
 
-    fn press(code: KeyCode) -> Event {
-        Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
+    #[test]
+    fn compose_ignores_control_modified_non_movement_keys() {
+        for ch in 'a'..='i' {
+            assert_eq!(
+                map_event(&ctrl(KeyCode::Char(ch)), Screen::Compose),
+                None,
+                "Ctrl+{ch} should not append in Compose"
+            );
+        }
+        for ch in 'l'..='z' {
+            if ch == 'q' {
+                // Ctrl+q is global quit and is handled before screen-specific mapping.
+                continue;
+            }
+            assert_eq!(
+                map_event(&ctrl(KeyCode::Char(ch)), Screen::Compose),
+                None,
+                "Ctrl+{ch} should not append in Compose"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_ctrl_j_and_ctrl_k_move_category() {
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('j')), Screen::Compose),
+            Some(Action::MoveComposeCategory(1))
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('k')), Screen::Compose),
+            Some(Action::MoveComposeCategory(-1))
+        );
+    }
+
+    #[test]
+    fn key_management_ctrl_bindings_map_to_actions() {
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('a')), Screen::KeyManagement),
+            Some(Action::AcknowledgeCurrentWarning)
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('b')), Screen::KeyManagement),
+            Some(Action::BackupKey)
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('d')), Screen::KeyManagement),
+            Some(Action::GenerateDevKey)
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('g')), Screen::KeyManagement),
+            Some(Action::GenerateEncryptedKey)
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('r')), Screen::KeyManagement),
+            Some(Action::RestoreKey)
+        );
+        assert_eq!(
+            map_event(&ctrl(KeyCode::Char('q')), Screen::KeyManagement),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn key_management_plain_char_appends_to_passphrase() {
+        assert_eq!(
+            map_event(&press(KeyCode::Char('x')), Screen::KeyManagement),
+            Some(Action::KeyAppend('x'))
+        );
+    }
+
+    #[test]
+    fn movement_keys_are_equivalent_across_list_screens() {
+        for screen in [
+            Screen::Feed,
+            Screen::Thread,
+            Screen::Subscriptions,
+            Screen::SyncStatus,
+        ] {
+            assert_eq!(
+                map_event(&press(KeyCode::Up), screen),
+                Some(Action::MoveSelection(-1)),
+                "Up on {screen:?}"
+            );
+            assert_eq!(
+                map_event(&press(KeyCode::Char('k')), screen),
+                Some(Action::MoveSelection(-1)),
+                "k on {screen:?}"
+            );
+            assert_eq!(
+                map_event(&press(KeyCode::Down), screen),
+                Some(Action::MoveSelection(1)),
+                "Down on {screen:?}"
+            );
+            assert_eq!(
+                map_event(&press(KeyCode::Char('j')), screen),
+                Some(Action::MoveSelection(1)),
+                "j on {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_space_toggles_collapse() {
+        assert_eq!(
+            map_event(&press(KeyCode::Char(' ')), Screen::Thread),
+            Some(Action::ToggleCollapse)
+        );
     }
 
     fn ctrl(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL))
+    }
+
+    fn press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::empty()))
     }
 }
