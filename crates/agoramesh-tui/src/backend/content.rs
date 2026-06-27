@@ -1,9 +1,9 @@
 //! Feed, thread, and post creation projections over the verified store.
 
 use agoramesh_core::SystemClock;
-use agoramesh_core::objects::{
-    ParentKind, category as category_obj, comment as comment_obj, post as post_obj,
-};
+use agoramesh_core::objects::acceptance::{self, AcceptanceContext};
+use agoramesh_core::objects::projection::{self, CategoryObject, CommentObject, PostObject};
+use agoramesh_core::objects::{ParentKind, post as post_obj};
 use agoramesh_store::store::Store;
 use chrono::{DateTime, Utc};
 
@@ -23,10 +23,11 @@ impl Backend {
         let store = self.store()?;
         let clock = SystemClock;
         let messages = store.list_by_type("category", &clock)?;
+        let context = AcceptanceContext::phase1(&clock);
         let mut summaries = Vec::with_capacity(messages.len());
         for message in messages {
-            let body: category_obj::Body = serde_json::from_slice(message.signed_payload().body())
-                .map_err(|error| Error::Message(error.to_string()))?;
+            acceptance::validate_phase1_for_acceptance(&message, &context).map_err(Error::from)?;
+            let body = projection::decode_body::<CategoryObject>(&message).map_err(Error::from)?;
             summaries.push(CategorySummary {
                 object_id: message.id().to_hex(),
                 display_name: body.display_name,
@@ -48,13 +49,15 @@ impl Backend {
         let store = self.store()?;
         let clock = SystemClock;
         let messages = store.list_by_scope(category_id, &clock)?;
+        let context = AcceptanceContext::phase1(&clock);
         let mut posts = Vec::new();
         for message in messages {
-            if message.signed_payload().kind() != "post" {
+            let Some(body) =
+                projection::maybe_decode_body::<PostObject>(&message).map_err(Error::from)?
+            else {
                 continue;
-            }
-            let body: post_obj::Body = serde_json::from_slice(message.signed_payload().body())
-                .map_err(|error| Error::Message(error.to_string()))?;
+            };
+            acceptance::validate_phase1_for_acceptance(&message, &context).map_err(Error::from)?;
             posts.push(FeedPost {
                 object_id: message.id().to_hex(),
                 author_id: hex::encode(message.signed_payload().author_pubkey()),
@@ -83,7 +86,7 @@ impl Backend {
         let author_id = hex::encode(message.signed_payload().author_pubkey());
         let mut store = self.store()?;
         let clock = SystemClock;
-        agoramesh_core::objects::validation::validate_phase1_message(&message)
+        acceptance::validate_phase1_for_acceptance(&message, &AcceptanceContext::phase1(&clock))
             .map_err(Error::from)?;
         store.insert(message, &clock)?;
         Ok(FeedPost {
@@ -108,12 +111,13 @@ impl Backend {
         let post_message = store
             .get(post_message_id, &clock)?
             .ok_or_else(|| Error::Message("post not found".to_owned()))?;
-        if post_message.signed_payload().kind() != "post" {
+        let Some(post_body) =
+            projection::maybe_decode_body::<PostObject>(&post_message).map_err(Error::from)?
+        else {
             return Err(Error::Message("thread root is not a post".to_owned()));
-        }
-        let post_body: post_obj::Body =
-            serde_json::from_slice(post_message.signed_payload().body())
-                .map_err(|error| Error::Message(error.to_string()))?;
+        };
+        let context = AcceptanceContext::phase1(&clock);
+        acceptance::validate_phase1_for_acceptance(&post_message, &context).map_err(Error::from)?;
         let post = FeedPost {
             object_id: post_message.id().to_hex(),
             author_id: hex::encode(post_message.signed_payload().author_pubkey()),
@@ -131,13 +135,14 @@ impl Backend {
             Vec<LoadedComment>,
         > = std::collections::HashMap::new();
         for message in store.list_by_scope(&category_id, &clock)? {
-            if message.signed_payload().kind() != "comment" {
+            let Some(body) =
+                projection::maybe_decode_body::<CommentObject>(&message).map_err(Error::from)?
+            else {
                 continue;
-            }
-            let body: comment_obj::Body = serde_json::from_slice(message.signed_payload().body())
-                .map_err(|error| Error::Message(error.to_string()))?;
+            };
             let parent_id = agoramesh_core::MessageId::from_hex(&body.parent_id)
                 .map_err(|error| Error::Message(format!("invalid comment parent_id: {error}")))?;
+            acceptance::validate_phase1_for_acceptance(&message, &context).map_err(Error::from)?;
             let parent_kind = body.parent_kind;
             let loaded = LoadedComment {
                 object_id: message.id(),
@@ -217,316 +222,5 @@ fn build_comment_tree(
 }
 
 #[cfg(test)]
-#[allow(dead_code, reason = "legacy recursive helper retained for future use")]
-fn attach_replies(
-    mut comments: Vec<ThreadComment>,
-    replies_by_parent: &mut std::collections::HashMap<String, Vec<ThreadComment>>,
-) -> Vec<ThreadComment> {
-    for comment in &mut comments {
-        let mut child_replies = replies_by_parent
-            .remove(&comment.object_id)
-            .unwrap_or_default();
-        child_replies.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.object_id.cmp(&b.object_id))
-        });
-        comment.replies = attach_replies(child_replies, replies_by_parent);
-    }
-    comments
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use agoramesh_core::Keypair;
-    use agoramesh_core::objects::{ParentKind, category, comment as comment_obj};
-    use chrono::Timelike;
-
-    fn backend_fixture(plaintext: bool) -> (Backend, tempfile::TempDir) {
-        let temp_dir = tempfile::tempdir().expect("create tempdir");
-        let backend =
-            Backend::open(Some(temp_dir.path().to_path_buf()), plaintext).expect("open backend");
-        (backend, temp_dir)
-    }
-
-    #[test]
-    fn backend_loads_feed_from_sqlite_scope() {
-        let (backend, _temp_dir) = backend_fixture(true);
-        let keypair = Keypair::generate();
-        let now = Utc::now();
-        let created_at = now.with_nanosecond(0).expect("truncate to seconds");
-        let category = category::create(
-            &keypair,
-            created_at,
-            "Test Category",
-            "A test category",
-            "Initial charter text",
-        )
-        .expect("create category");
-        let category_id = category.signed_payload().scope().to_owned();
-        let mut store = backend.store().expect("open store");
-        let clock = SystemClock;
-        store.insert(category, &clock).expect("insert category");
-
-        let post = post_obj::create(
-            &keypair,
-            &category_id,
-            "Hello from the TUI feed",
-            created_at,
-        )
-        .expect("create post");
-        store.insert(post, &clock).expect("insert post");
-
-        let posts = backend.load_feed(&category_id).expect("load feed");
-        assert_eq!(posts.len(), 1);
-        assert_eq!(
-            posts.first().map_or("", |post| post.text.as_str()),
-            "Hello from the TUI feed"
-        );
-    }
-
-    #[test]
-    fn backend_loads_nested_thread_replies() {
-        let (backend, _temp_dir) = backend_fixture(true);
-        let keypair = Keypair::generate();
-        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
-        let category = category::create(
-            &keypair,
-            created_at,
-            "Thread Category",
-            "A test category",
-            "Initial charter text",
-        )
-        .expect("create category");
-        let category_id = category.signed_payload().scope().to_owned();
-        let mut store = backend.store().expect("open store");
-        let clock = SystemClock;
-        store.insert(category, &clock).expect("insert category");
-
-        let post = post_obj::create(
-            &keypair,
-            &category_id,
-            "Hello from the thread view",
-            created_at,
-        )
-        .expect("create post");
-        let post_id = post.id().to_hex();
-        store.insert(post, &clock).expect("insert post");
-
-        let top_comment = comment_obj::create(
-            &keypair,
-            &category_id,
-            ParentKind::Post,
-            agoramesh_core::MessageId::from_hex(&post_id).expect("parse post id"),
-            "Top-level comment",
-            created_at,
-        )
-        .expect("create top comment");
-        let top_comment_id = top_comment.id().to_hex();
-        store
-            .insert(top_comment, &clock)
-            .expect("insert top comment");
-
-        let first_reply = comment_obj::create(
-            &keypair,
-            &category_id,
-            ParentKind::Comment,
-            agoramesh_core::MessageId::from_hex(&top_comment_id).expect("parse top comment id"),
-            "First reply",
-            created_at,
-        )
-        .expect("create first reply");
-        let first_reply_id = first_reply.id().to_hex();
-        store
-            .insert(first_reply, &clock)
-            .expect("insert first reply");
-
-        let second_reply = comment_obj::create(
-            &keypair,
-            &category_id,
-            ParentKind::Comment,
-            agoramesh_core::MessageId::from_hex(&top_comment_id).expect("parse top comment id"),
-            "Second reply",
-            created_at,
-        )
-        .expect("create second reply");
-        let second_reply_id = second_reply.id().to_hex();
-        store
-            .insert(second_reply, &clock)
-            .expect("insert second reply");
-
-        let thread = backend.load_thread(&post_id).expect("load thread");
-        assert_eq!(thread.post.text, "Hello from the thread view");
-        assert_eq!(thread.comments.len(), 1);
-
-        let comment = thread.comments.first().expect("top-level comment");
-        assert_eq!(comment.text, "Top-level comment");
-        assert_eq!(comment.replies.len(), 2);
-
-        let expected_reply_ids = {
-            let mut ids = vec![first_reply_id, second_reply_id];
-            ids.sort();
-            ids
-        };
-        let loaded_reply_ids: Vec<_> = comment
-            .replies
-            .iter()
-            .map(|reply| reply.object_id.as_str())
-            .collect();
-        assert_eq!(loaded_reply_ids, expected_reply_ids);
-    }
-
-    #[test]
-    fn thread_ignores_comment_with_post_id_but_comment_parent_kind() {
-        let (backend, _temp_dir) = backend_fixture(true);
-        let keypair = Keypair::generate();
-        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
-        let category = category::create(
-            &keypair,
-            created_at,
-            "Thread Category",
-            "A test category",
-            "Initial charter text",
-        )
-        .expect("create category");
-        let category_id = category.signed_payload().scope().to_owned();
-        let mut store = backend.store().expect("open store");
-        let clock = SystemClock;
-        store.insert(category, &clock).expect("insert category");
-
-        let post = post_obj::create(
-            &keypair,
-            &category_id,
-            "Hello from the thread view",
-            created_at,
-        )
-        .expect("create post");
-        let post_id = post.id().to_hex();
-        store.insert(post, &clock).expect("insert post");
-
-        let mismatched = comment_obj::create(
-            &keypair,
-            &category_id,
-            ParentKind::Comment,
-            agoramesh_core::MessageId::from_hex(&post_id).expect("parse post id"),
-            "Mismatched parent kind",
-            created_at,
-        )
-        .expect("create mismatched comment");
-        store.insert(mismatched, &clock).expect("insert mismatched");
-
-        let thread = backend.load_thread(&post_id).expect("load thread");
-        assert!(
-            thread.comments.is_empty(),
-            "a comment with parent_kind=Comment and parent_id=post_id should not appear as a top-level post comment"
-        );
-    }
-
-    #[test]
-    fn load_thread_rejects_non_post_root() {
-        let (backend, _temp_dir) = backend_fixture(true);
-        let keypair = Keypair::generate();
-        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
-        let category = category::create(
-            &keypair,
-            created_at,
-            "Thread Category",
-            "A test category",
-            "Initial charter text",
-        )
-        .expect("create category");
-        let category_id = category.signed_payload().scope().to_owned();
-        let mut store = backend.store().expect("open store");
-        let clock = SystemClock;
-        store.insert(category, &clock).expect("insert category");
-
-        let post = post_obj::create(
-            &keypair,
-            &category_id,
-            "Hello from the thread view",
-            created_at,
-        )
-        .expect("create post");
-        let post_id = post.id();
-        store.insert(post, &clock).expect("insert post");
-
-        let comment = comment_obj::create(
-            &keypair,
-            &category_id,
-            ParentKind::Post,
-            post_id,
-            "A comment body is not a thread root post",
-            created_at,
-        )
-        .expect("create comment");
-        let comment_id = comment.id().to_hex();
-        store.insert(comment, &clock).expect("insert comment");
-
-        let error = backend
-            .load_thread(&comment_id)
-            .expect_err("load_thread should reject a comment object as the thread root");
-        assert!(
-            error.to_string().contains("thread root is not a post"),
-            "expected non-post thread root error, got {error}"
-        );
-    }
-
-    #[test]
-    fn thread_rejects_malformed_comment_parent_id() {
-        let (backend, _temp_dir) = backend_fixture(true);
-        let keypair = Keypair::generate();
-        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
-        let category = category::create(
-            &keypair,
-            created_at,
-            "Thread Category",
-            "A test category",
-            "Initial charter text",
-        )
-        .expect("create category");
-        let category_id = category.signed_payload().scope().to_owned();
-        let mut store = backend.store().expect("open store");
-        let clock = SystemClock;
-        store.insert(category, &clock).expect("insert category");
-
-        let post = post_obj::create(
-            &keypair,
-            &category_id,
-            "Hello from the thread view",
-            created_at,
-        )
-        .expect("create post");
-        let post_id = post.id().to_hex();
-        store.insert(post, &clock).expect("insert post");
-
-        // Build a syntactically valid comment body whose parent_id is not a valid MessageId.
-        let message = {
-            let body = comment_obj::Body {
-                category_id: category_id.clone(),
-                parent_kind: ParentKind::Post,
-                parent_id: "not-a-valid-id".to_owned(),
-                text: "bad parent id".to_owned(),
-                created_at,
-            };
-            let canonical = agoramesh_core::canonical::to_vec(&body).expect("canonicalize");
-            agoramesh_core::message::Message::create(
-                &keypair,
-                "comment",
-                created_at,
-                category_id,
-                canonical,
-            )
-            .expect("create bad comment")
-        };
-        store.insert(message, &clock).expect("insert bad comment");
-
-        let result = backend.load_thread(&post_id);
-        let error =
-            result.expect_err("load_thread should fail when a comment has an invalid parent_id");
-        assert!(
-            error.to_string().contains("invalid comment parent_id"),
-            "expected malformed parent_id error, got {error}"
-        );
-    }
-}
+#[path = "content_tests.rs"]
+mod tests;

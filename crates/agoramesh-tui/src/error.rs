@@ -62,6 +62,12 @@ impl From<agoramesh_core::objects::validation::Error> for Error {
     }
 }
 
+impl From<agoramesh_core::objects::acceptance::Error> for Error {
+    fn from(source: agoramesh_core::objects::acceptance::Error) -> Self {
+        Self::Message(source.to_string())
+    }
+}
+
 impl From<chrono::ParseError> for Error {
     fn from(source: chrono::ParseError) -> Self {
         Self::Message(source.to_string())
