@@ -28,7 +28,7 @@ category_id = SHA-256(canonical_json_bytes(category_id_input))
 
 The output is encoded as a lowercase hex string.
 
-`initial_charter_hash` is computed the same way, but from the first `category_charter` object's `signing_payload`.
+`initial_charter_hash` is computed as `SHA-256(canonical_json_bytes(initial_charter_anchor_body))` for the embedded Phase 1 charter anchor. A separate `category_charter` object is deferred to Phase 3.
 
 ## Input Canonicalization
 
@@ -43,7 +43,50 @@ Canonicalization rules are strict. Two implementations that receive the same log
 7. Canonical JSON MUST use UTF-8, no insignificant whitespace, and no extra fields.
 8. String values MUST be serialized exactly once. No locale rules, display rules, or transport rewrites are allowed before hashing.
 
+This fixed-order category-id preimage is deliberately narrower than the shared AgoraMesh canonical JSON encoder used for signed payloads and object bodies, which sorts object keys recursively. `category_id` implementations MUST NOT sort the five input fields alphabetically before hashing.
+
 These rules are what make the identifier portable across clients and nodes.
+
+## Golden Test Vector
+
+Input fixture:
+
+```json
+{
+  "creator_pubkey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "display_name": "Local Tools",
+  "created_at": "2024-01-02T03:04:05Z",
+  "initial_charter": {
+    "created_at": "2024-01-02T03:04:05Z",
+    "protocol_version": 1,
+    "text": "Keep tests deterministic"
+  }
+}
+```
+
+Initial charter canonical bytes:
+
+```text
+{"created_at":"2024-01-02T03:04:05Z","protocol_version":1,"text":"Keep tests deterministic"}
+```
+
+`initial_charter_hash`:
+
+```text
+d969b390d6ebc04d0d4ce96fb5ac1627c6b8649b7d9b60943186f4cf3b370b52
+```
+
+Category ID canonical bytes:
+
+```text
+{"protocol_version":1,"creator_pubkey":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","display_name":"Local Tools","created_at":"2024-01-02T03:04:05Z","initial_charter_hash":"d969b390d6ebc04d0d4ce96fb5ac1627c6b8649b7d9b60943186f4cf3b370b52"}
+```
+
+`category_id`:
+
+```text
+1b24f95eb2d42ba6df9e6eb7494184341bc11cf73a353350f583483579047e9d
+```
 
 ## Validation
 
