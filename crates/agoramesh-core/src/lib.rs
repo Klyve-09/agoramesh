@@ -9,3 +9,4 @@ pub mod objects;
 
 pub use identity::{Identity, Keypair};
 pub use message::{Clock, Message, MessageId, SkewWarning, SystemClock, Verification};
+pub use objects::acceptance::{AcceptanceContext, AcceptedPhase1Message, Phase1Acceptance};

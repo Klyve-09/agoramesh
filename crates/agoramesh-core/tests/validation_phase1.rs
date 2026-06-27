@@ -11,11 +11,12 @@
 )]
 
 use agoramesh_core::objects::{
-    ParentKind, category, comment, post, revocation_certificate, user_profile, validation,
+    ParentKind, acceptance, category, comment, post, revocation_certificate, user_profile,
+    validation,
 };
-use agoramesh_core::{Keypair, Message};
+use agoramesh_core::{Clock, Keypair, Message};
 use base64::Engine;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 
 fn utc(seconds: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(seconds, 0).expect("valid timestamp")
@@ -54,6 +55,37 @@ fn tamper_body_json(message: &Message, extra_field: (&str, serde_json::Value)) -
         .expect("payload object")
         .insert("body".to_owned(), serde_json::Value::String(tampered_b64));
     serde_json::from_value(value).expect("deserialize tampered")
+}
+
+#[derive(Debug, Default)]
+struct FixedClock {
+    now: DateTime<Utc>,
+}
+
+impl Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.now
+    }
+}
+
+fn tamper_signature(message: &Message) -> Message {
+    let mut value = serde_json::to_value(message).expect("serialize message");
+    let signature = value
+        .get_mut("signature")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("signature array");
+    let first = signature.first_mut().expect("signature byte");
+    *first = serde_json::Value::Number(0_u64.into());
+    serde_json::from_value(value).expect("deserialize tampered signature")
+}
+
+fn tamper_object_id(message: &Message) -> Message {
+    let mut value = serde_json::to_value(message).expect("serialize message");
+    value.as_object_mut().expect("message object").insert(
+        "id".to_owned(),
+        serde_json::Value::Array(vec![0_u64.into(); 32]),
+    );
+    serde_json::from_value(value).expect("deserialize tampered id")
 }
 
 #[test]
@@ -281,5 +313,88 @@ fn unknown_type_rejects() {
     assert!(matches!(
         validation::validate_phase1_message(&message),
         Err(validation::Error::UnknownType(kind)) if kind == "unknown_type"
+    ));
+}
+
+#[test]
+fn acceptance_rejects_invalid_signature_before_clock_and_semantics() {
+    let keypair = Keypair::generate();
+    let now = utc(1_700_000_000);
+    let message = post::create(
+        &keypair,
+        "category-123",
+        "",
+        now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1),
+    )
+    .expect("create post");
+    let tampered = tamper_signature(&message);
+    let clock = FixedClock { now };
+    let context = acceptance::AcceptanceContext::phase1(&clock);
+
+    assert!(matches!(
+        acceptance::validate_phase1_for_acceptance(&tampered, &context),
+        Err(acceptance::Error::Integrity(
+            agoramesh_core::message::Error::InvalidSignature { .. }
+        ))
+    ));
+}
+
+#[test]
+fn acceptance_rejects_object_id_before_clock_and_semantics() {
+    let keypair = Keypair::generate();
+    let now = utc(1_700_000_000);
+    let message = post::create(
+        &keypair,
+        "category-123",
+        "",
+        now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1),
+    )
+    .expect("create post");
+    let tampered = tamper_object_id(&message);
+    let clock = FixedClock { now };
+    let context = acceptance::AcceptanceContext::phase1(&clock);
+
+    assert!(matches!(
+        acceptance::validate_phase1_for_acceptance(&tampered, &context),
+        Err(acceptance::Error::Integrity(
+            agoramesh_core::message::Error::ObjectIdMismatch
+        ))
+    ));
+}
+
+#[test]
+fn acceptance_rejects_clock_before_phase1_semantics() {
+    let keypair = Keypair::generate();
+    let now = utc(1_700_000_000);
+    let message = post::create(
+        &keypair,
+        "category-123",
+        "",
+        now + TimeDelta::seconds(agoramesh_core::message::CLOCK_SKEW_REJECT_SECONDS + 1),
+    )
+    .expect("create post");
+    let clock = FixedClock { now };
+    let context = acceptance::AcceptanceContext::phase1(&clock);
+
+    assert!(matches!(
+        acceptance::validate_phase1_for_acceptance(&message, &context),
+        Err(acceptance::Error::Clock(
+            agoramesh_core::message::Error::ClockSkewTooLarge { .. }
+        ))
+    ));
+}
+
+#[test]
+fn acceptance_rejects_phase1_semantics_after_integrity_and_clock() {
+    let keypair = Keypair::generate();
+    let now = utc(1_700_000_000);
+    let message = post::create(&keypair, "category-123", "", now).expect("create post");
+    let clock = FixedClock { now };
+    let context = acceptance::AcceptanceContext::phase1(&clock);
+
+    assert!(matches!(
+        acceptance::validate_phase1_for_acceptance(&message, &context),
+        Err(acceptance::Error::Semantic(validation::Error::EmptyField { field }))
+            if field == "text"
     ));
 }
