@@ -18,6 +18,15 @@ pub enum Error {
     #[error("unknown phase1 object type: {0}")]
     UnknownType(String),
 
+    /// The message is a known object type but not the projection type requested.
+    #[error("wrong phase1 object kind: expected {expected}, got {actual}")]
+    WrongKind {
+        /// Expected signed payload kind.
+        expected: String,
+        /// Actual signed payload kind.
+        actual: String,
+    },
+
     /// The body could not be parsed as the declared object type.
     #[error("invalid body for {kind}: {message}")]
     InvalidBody {
@@ -210,12 +219,12 @@ fn validate_category(message: &Message) -> Result<(), Error> {
         });
     }
 
-    let expected_category_id = compute_category_id(
-        &author,
-        &body.display_name,
-        &body.created_at,
-        &body.initial_charter_hash,
-    )?;
+    let expected_category_id = compute_category_id(&CategoryIdParts {
+        creator_pubkey: &author,
+        display_name: &body.display_name,
+        created_at: &body.created_at,
+        initial_charter_hash: &body.initial_charter_hash,
+    })?;
     if body.category_id != expected_category_id {
         return Err(Error::HashMismatch {
             field: "category_id".to_owned(),
@@ -308,6 +317,7 @@ fn rfc3339(value: &DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+use crate::objects::category_id::CategoryIdParts;
 use crate::objects::{category, comment, post, revocation_certificate, user_profile};
 use sha2::{Digest, Sha256};
 
@@ -322,30 +332,8 @@ where
     Ok(message::hex_encode(&hasher.finalize()))
 }
 
-fn compute_category_id(
-    creator_pubkey: &str,
-    display_name: &str,
-    created_at: &DateTime<Utc>,
-    initial_charter_hash: &str,
-) -> Result<String, Error> {
-    #[derive(serde::Serialize)]
-    struct CategoryIdInput<'a> {
-        protocol_version: u32,
-        creator_pubkey: &'a str,
-        display_name: &'a str,
-        created_at: &'a DateTime<Utc>,
-        initial_charter_hash: &'a str,
-    }
-
-    let input = CategoryIdInput {
-        protocol_version: PROTOCOL_VERSION,
-        creator_pubkey,
-        display_name,
-        created_at,
-        initial_charter_hash,
-    };
-
-    hash_canonical(&input).map_err(|error| Error::InvalidBody {
+fn compute_category_id(parts: &CategoryIdParts<'_>) -> Result<String, Error> {
+    crate::objects::category_id::compute(parts).map_err(|error| Error::InvalidBody {
         kind: "category".to_owned(),
         message: error.to_string(),
     })

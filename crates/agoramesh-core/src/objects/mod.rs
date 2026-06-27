@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 use crate::canonical;
 use crate::message::{self, Body};
 
+pub mod acceptance;
 pub mod category;
+pub mod category_id;
 pub mod comment;
 pub mod post;
+pub mod projection;
 pub mod revocation_certificate;
 pub mod user_profile;
 pub mod validation;

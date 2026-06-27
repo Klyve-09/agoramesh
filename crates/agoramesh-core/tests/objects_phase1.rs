@@ -14,12 +14,19 @@
 use agoramesh_core::canonical;
 use agoramesh_core::message::{MessageId, PROTOCOL_VERSION};
 use agoramesh_core::objects::{
-    ParentKind, category, comment, post, revocation_certificate, user_profile,
+    ParentKind, category, category_id, comment, post, revocation_certificate, user_profile,
 };
 use agoramesh_core::{Keypair, Message};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+const CATEGORY_ID_FIXTURE_CREATOR: &str =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const CATEGORY_ID_FIXTURE_CANONICAL: &str = "{\"protocol_version\":1,\"creator_pubkey\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"display_name\":\"Local Tools\",\"created_at\":\"2024-01-02T03:04:05Z\",\"initial_charter_hash\":\"d969b390d6ebc04d0d4ce96fb5ac1627c6b8649b7d9b60943186f4cf3b370b52\"}";
+const CATEGORY_ID_FIXTURE_CHARTER_HASH: &str =
+    "d969b390d6ebc04d0d4ce96fb5ac1627c6b8649b7d9b60943186f4cf3b370b52";
+const CATEGORY_ID_FIXTURE_ID: &str =
+    "1b24f95eb2d42ba6df9e6eb7494184341bc11cf73a353350f583483579047e9d";
 
 fn utc(seconds: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(seconds, 0).expect("valid timestamp")
@@ -39,15 +46,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex(&hasher.finalize())
-}
-
-#[derive(Serialize)]
-struct ExpectedCategoryIdInput<'a> {
-    protocol_version: u32,
-    creator_pubkey: &'a str,
-    display_name: &'a str,
-    created_at: &'a DateTime<Utc>,
-    initial_charter_hash: &'a str,
 }
 
 #[test]
@@ -125,20 +123,39 @@ fn category_builder_derives_deterministic_id_from_spec_inputs() {
     };
     let charter_hash = sha256_hex(&canonical::to_vec(&charter_anchor).expect("charter bytes"));
     let creator_pubkey = hex(keypair.identity().verifying_key().as_bytes());
-    let input = ExpectedCategoryIdInput {
-        protocol_version: PROTOCOL_VERSION,
+    let input = category_id::CategoryIdParts {
         creator_pubkey: &creator_pubkey,
         display_name: "Local Tools",
         created_at: &created_at,
         initial_charter_hash: &charter_hash,
     };
-    let expected_category_id = sha256_hex(&canonical::to_vec(&input).expect("id bytes"));
+    let expected_category_id = category_id::compute(&input).expect("id bytes");
 
     assert_eq!(message.signed_payload().kind(), "category");
     assert_eq!(message.signed_payload().scope(), expected_category_id);
     assert_eq!(body.category_id, expected_category_id);
     assert_eq!(body.initial_charter_hash, charter_hash);
     assert_eq!(body.initial_charter, charter_anchor);
+}
+
+#[test]
+fn category_id_golden_vector_uses_spec_field_order() {
+    let created_at = DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
+        .expect("parse fixture time")
+        .with_timezone(&Utc);
+    let parts = category_id::CategoryIdParts {
+        creator_pubkey: CATEGORY_ID_FIXTURE_CREATOR,
+        display_name: "Local Tools",
+        created_at: &created_at,
+        initial_charter_hash: CATEGORY_ID_FIXTURE_CHARTER_HASH,
+    };
+
+    let canonical_bytes = category_id::canonical_bytes(&parts).expect("canonical bytes");
+    let category_id = category_id::compute(&parts).expect("category id");
+
+    assert_eq!(canonical_bytes, CATEGORY_ID_FIXTURE_CANONICAL.as_bytes());
+    assert_eq!(CATEGORY_ID_FIXTURE_CHARTER_HASH, sha256_hex(br#"{"created_at":"2024-01-02T03:04:05Z","protocol_version":1,"text":"Keep tests deterministic"}"#));
+    assert_eq!(category_id, CATEGORY_ID_FIXTURE_ID);
 }
 
 #[test]
