@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 2 minimal TUI client implementation is in progress.
+PR #6 brings the minimal TUI client implementation to its current review state, including the follow-up module split/refactor and restored thread-loader invariants. Phase 2 itself is not complete yet: the required user UX review is still pending before Phase 2 can be declared complete.
 
 ## Scope
 
@@ -32,6 +32,14 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 - Key status panel with encrypted key generation/unlock plus nonfatal backup/restore status handling; dev plaintext is explicit only
 - Sync status panel showing manually configured peers and making the absence of background sync explicit
 - Event/controller/backend/persistence integration coverage for compose, subscriptions, warnings, keys, and thread loading
+- PR #6 module split/refactor:
+  - `keyring.rs` split into `crypto.rs`, `files.rs`, and `schema.rs`
+  - backend split into focused `content`, `file_io`, `key_mgmt`, `local_state`, and `peers` modules
+  - controller split into focused compose, key-management, navigation, and dispatcher modules
+- Thread loader regression coverage restored after the split:
+  - `ParentKind` filtering is enforced so a comment with `parent_kind=Comment` and a post id is not rendered as a top-level post comment
+  - malformed comment `parent_id` values are rejected instead of silently ignored
+  - non-post thread roots are rejected before root post body decoding
 
 ## Bug fix included
 
@@ -39,17 +47,23 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
 
 ## Verification
 
-- 2026-06-26 PR #5 code head `e14ed9a`: Phase 2 blocker fixes verified after
-  subscription cache, compose selection, key overwrite protection, terminal
-  setup cleanup, nonfatal key backup/restore changes, and strict restore
-  validation for locked encrypted backups.
-- Automated checks passed:
+- Previous review baseline: 2026-06-26 PR #5 code head `e14ed9a` verified
+  the earlier Phase 2 blocker fixes for subscription cache, compose selection,
+  key overwrite protection, terminal setup cleanup, nonfatal key backup/restore
+  handling, and strict restore validation for locked encrypted backups.
+- Current PR #6 review state includes the subsequent module split/refactor,
+  restored `ParentKind` filtering, and the non-post thread-root rejection in
+  `Backend::load_thread`.
+- Final automated checks for the current PR #6 state passed:
   - `cargo fmt --check`
   - `cargo check --workspace --all-targets`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace --all-targets`
   - `./dev ci`
 - Focused regressions passed:
+  - `load_thread_rejects_non_post_root`
+  - `thread_ignores_comment_with_post_id_but_comment_parent_kind`
+  - `thread_rejects_malformed_comment_parent_id`
   - `subscription_toggle_loads_existing_feed_without_restart`
   - `compose_submit_selects_submitted_category_and_new_post`
   - `encrypted_key_generate_does_not_overwrite_existing_key`
@@ -81,9 +95,9 @@ Phase 2 covers a minimal terminal UI for the AgoraMesh text prototype:
     preserves the displayed public key, keeps existing `identity.key` bytes, and
     removes the temporary restore file.
 
-## Remaining before merge
+## Remaining before Phase 2 completion
 
-- Manual TUI UX pass by a user before declaring Phase 2 complete
+- UX review pending: manual TUI UX pass by a user is still required before declaring Phase 2 complete
 - Any feedback-driven protocol/UI corrections from that UX pass
 
 ## Deliberately excluded from Phase 2

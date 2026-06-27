@@ -108,6 +108,9 @@ impl Backend {
         let post_message = store
             .get(post_message_id, &clock)?
             .ok_or_else(|| Error::Message("post not found".to_owned()))?;
+        if post_message.signed_payload().kind() != "post" {
+            return Err(Error::Message("thread root is not a post".to_owned()));
+        }
         let post_body: post_obj::Body =
             serde_json::from_slice(post_message.signed_payload().body())
                 .map_err(|error| Error::Message(error.to_string()))?;
@@ -417,6 +420,55 @@ mod tests {
         assert!(
             thread.comments.is_empty(),
             "a comment with parent_kind=Comment and parent_id=post_id should not appear as a top-level post comment"
+        );
+    }
+
+    #[test]
+    fn load_thread_rejects_non_post_root() {
+        let (backend, _temp_dir) = backend_fixture(true);
+        let keypair = Keypair::generate();
+        let created_at = Utc::now().with_nanosecond(0).expect("truncate to seconds");
+        let category = category::create(
+            &keypair,
+            created_at,
+            "Thread Category",
+            "A test category",
+            "Initial charter text",
+        )
+        .expect("create category");
+        let category_id = category.signed_payload().scope().to_owned();
+        let mut store = backend.store().expect("open store");
+        let clock = SystemClock;
+        store.insert(category, &clock).expect("insert category");
+
+        let post = post_obj::create(
+            &keypair,
+            &category_id,
+            "Hello from the thread view",
+            created_at,
+        )
+        .expect("create post");
+        let post_id = post.id();
+        store.insert(post, &clock).expect("insert post");
+
+        let comment = comment_obj::create(
+            &keypair,
+            &category_id,
+            ParentKind::Post,
+            post_id,
+            "A comment body is not a thread root post",
+            created_at,
+        )
+        .expect("create comment");
+        let comment_id = comment.id().to_hex();
+        store.insert(comment, &clock).expect("insert comment");
+
+        let error = backend
+            .load_thread(&comment_id)
+            .expect_err("load_thread should reject a comment object as the thread root");
+        assert!(
+            error.to_string().contains("thread root is not a post"),
+            "expected non-post thread root error, got {error}"
         );
     }
 
