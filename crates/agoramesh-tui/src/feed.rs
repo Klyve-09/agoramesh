@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap,
 };
 
 use crate::app::AppState;
@@ -58,7 +58,7 @@ fn render_category_list(state: &AppState, area: Rect, buf: &mut Buffer) {
         .collect();
     let mut list_state = ListState::default();
     list_state.select(selected_index(state));
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Categories"));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("카테고리"));
     StatefulWidget::render(list, area, buf, &mut list_state);
 }
 
@@ -66,8 +66,11 @@ fn render_post_list(state: &AppState, area: Rect, buf: &mut Buffer) {
     let posts: Vec<FeedPost> = state.selected_feed_posts().to_vec();
 
     if posts.is_empty() {
-        let empty = Paragraph::new("No subscribed posts in this category. Press 'n' to compose or '2' to manage subscriptions.")
-            .block(Block::default().borders(Borders::ALL).title("Posts"));
+        let empty = Paragraph::new(
+            "이 카테고리에 구독한 게시글이 없습니다. 'n'으로 글을 쓰거나 '2'로 구독을 관리하세요.",
+        )
+        .block(Block::default().borders(Borders::ALL).title("게시글"))
+        .wrap(Wrap { trim: true });
         empty.render(area, buf);
         return;
     }
@@ -100,7 +103,7 @@ fn render_post_list(state: &AppState, area: Rect, buf: &mut Buffer) {
     list_state.select(Some(
         state.selected_post_index.min(posts.len().saturating_sub(1)),
     ));
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Posts"));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("게시글"));
     StatefulWidget::render(list, area, buf, &mut list_state);
 }
 
@@ -164,7 +167,24 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("Categories"));
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("카테고리"));
         assert!(text.contains("Hello from the feed test"));
+    }
+
+    #[test]
+    fn feed_empty_state_wraps_full_korean_instruction() {
+        let state = AppState::new();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+        render_feed(&state, buffer.area, &mut buffer);
+        let text = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("'n'으로글을"));
+        assert!(compact.contains("쓰거나"));
+        assert!(compact.contains("'2'로구독을관리하세요"));
     }
 }
