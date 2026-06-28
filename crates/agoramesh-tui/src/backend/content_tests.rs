@@ -228,7 +228,9 @@ fn load_thread_rejects_non_post_root() {
         .load_thread(&comment_id)
         .expect_err("load_thread should reject a comment object as the thread root");
     assert!(
-        error.to_string().contains("thread root is not a post"),
+        error
+            .to_string()
+            .contains("스레드 루트가 게시글이 아닙니다"),
         "expected non-post thread root error, got {error}"
     );
 }
@@ -285,7 +287,9 @@ fn thread_rejects_malformed_comment_parent_id() {
     let error =
         result.expect_err("load_thread should fail when a comment has an invalid parent_id");
     assert!(
-        error.to_string().contains("invalid comment parent_id"),
+        error
+            .to_string()
+            .contains("댓글 parent_id가 올바르지 않습니다"),
         "expected malformed parent_id error, got {error}"
     );
 }

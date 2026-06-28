@@ -22,7 +22,7 @@ pub(super) fn handle_select(backend: &Backend, state: &mut AppState) -> Result<O
 
 fn open_selected_thread(backend: &Backend, state: &mut AppState) -> Result<Option<Action>> {
     let Some(post) = state.selected_feed_post().cloned() else {
-        state.status_message = Some("No post selected in the current feed category".to_owned());
+        state.status_message = Some("현재 피드 카테고리에서 선택한 게시글이 없습니다".to_owned());
         return Ok(None);
     };
     let thread = backend.load_thread(&post.object_id)?;

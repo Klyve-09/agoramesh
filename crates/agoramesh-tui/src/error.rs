@@ -16,19 +16,19 @@ pub enum Error {
     Peers(#[from] agoramesh_cli::peers::Error),
 
     /// Key file generation or load failed.
-    #[error("key error: {0}")]
+    #[error("키 오류: {0}")]
     Key(keyring::KeyringError),
 
     /// Reading or writing a local TUI state file failed.
-    #[error("state file I/O failed: {0}")]
+    #[error("상태 파일 I/O 실패: {0}")]
     StateIo(#[from] std::io::Error),
 
     /// JSON serialization of a local TUI state file failed.
-    #[error("state file JSON failed: {0}")]
+    #[error("상태 파일 JSON 실패: {0}")]
     StateJson(#[from] serde_json::Error),
 
     /// A store database open or migration failed.
-    #[error("store database error: {0}")]
+    #[error("저장소 데이터베이스 오류: {0}")]
     StoreDb(#[from] agoramesh_store::db::Error),
 
     /// A store read or write failed.
@@ -36,11 +36,11 @@ pub enum Error {
     Store(#[from] StoreError),
 
     /// A core message operation failed.
-    #[error("message error: {0}")]
+    #[error("메시지 오류: {0}")]
     Message(String),
 
     /// A direct sync operation failed.
-    #[error("sync failed: {0}")]
+    #[error("동기화 실패: {0}")]
     Sync(String),
 }
 
