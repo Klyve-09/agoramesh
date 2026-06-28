@@ -67,7 +67,7 @@ fn encrypted_key_generate_does_not_overwrite_existing_key() {
     assert_eq!(public_key_hex(&state.key_status), first_public_key);
     assert_eq!(
         state.status_message.as_deref(),
-        Some("Key overwrite disabled; use backup/restore instead")
+        Some("키 덮어쓰기는 비활성화되어 있습니다. 백업/복원을 사용하세요")
     );
 }
 
@@ -84,7 +84,7 @@ fn dev_plaintext_key_generate_does_not_overwrite_existing_key() {
     assert_eq!(public_key_hex(&state.key_status), first_public_key);
     assert_eq!(
         state.status_message.as_deref(),
-        Some("Key overwrite disabled; use backup/restore instead")
+        Some("키 덮어쓰기는 비활성화되어 있습니다. 백업/복원을 사용하세요")
     );
 }
 
@@ -98,7 +98,7 @@ fn backup_without_key_sets_status_and_does_not_exit() {
 
     assert!(result.is_ok());
     assert_eq!(state.screen, Screen::KeyManagement);
-    assert_status_contains(&state, "Backup failed");
+    assert_status_contains(&state, "백업 실패");
     assert!(!temp_dir.path().join("identity.key").exists());
 }
 
@@ -115,7 +115,7 @@ fn restore_without_backup_sets_status_and_does_not_exit() {
 
     assert!(result.is_ok());
     assert_eq!(state.screen, Screen::KeyManagement);
-    assert_status_contains(&state, "Restore failed");
+    assert_status_contains(&state, "복원 실패");
     assert_eq!(public_key_hex(&state.key_status), existing_public_key);
     assert_eq!(
         public_key_hex(&backend.key_status(false).expect("key status")),
@@ -143,7 +143,7 @@ fn restore_corrupt_backup_sets_status_and_preserves_existing_key() {
 
     assert!(result.is_ok());
     assert_eq!(state.screen, Screen::KeyManagement);
-    assert_status_contains(&state, "Restore failed");
+    assert_status_contains(&state, "복원 실패");
     assert_eq!(public_key_hex(&state.key_status), existing_public_key);
     assert_eq!(
         public_key_hex(&backend.key_status(false).expect("key status")),
@@ -181,7 +181,7 @@ fn restore_structured_invalid_encrypted_backup_without_session_preserves_existin
 
     assert!(result.is_ok());
     assert_eq!(locked_state.screen, Screen::KeyManagement);
-    assert_status_contains(&locked_state, "Restore failed");
+    assert_status_contains(&locked_state, "복원 실패");
     assert_eq!(
         std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
         existing_key_bytes
@@ -225,7 +225,7 @@ fn restore_encrypted_backup_with_bad_ciphertext_without_session_fails_and_preser
 
     assert!(result.is_ok());
     assert_eq!(locked_state.screen, Screen::KeyManagement);
-    assert_status_contains(&locked_state, "Restore failed");
+    assert_status_contains(&locked_state, "복원 실패");
     assert_eq!(
         std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
         existing_key_bytes
@@ -266,7 +266,7 @@ fn restore_encrypted_backup_with_unauthenticated_ciphertext_without_session_pres
 
     assert!(result.is_ok());
     assert_eq!(locked_state.screen, Screen::KeyManagement);
-    assert_status_contains(&locked_state, "Restore failed");
+    assert_status_contains(&locked_state, "복원 실패");
     assert_eq!(
         std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
         existing_key_bytes
@@ -304,7 +304,7 @@ fn restore_encrypted_backup_missing_required_fields_without_session_fails() {
 
     assert!(result.is_ok());
     assert_eq!(locked_state.screen, Screen::KeyManagement);
-    assert_status_contains(&locked_state, "Restore failed");
+    assert_status_contains(&locked_state, "복원 실패");
     assert_eq!(
         std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
         existing_key_bytes
@@ -334,7 +334,7 @@ fn restore_failed_validation_removes_temp_file() {
     let result = handle_action(&reopened, &mut locked_state, Action::RestoreKey);
 
     assert!(result.is_ok());
-    assert_status_contains(&locked_state, "Restore failed");
+    assert_status_contains(&locked_state, "복원 실패");
     assert!(!temp_restore_path(&temp_dir).exists());
 }
 
@@ -356,7 +356,7 @@ fn restore_structured_invalid_dev_plaintext_backup_preserves_existing_key() {
 
     assert!(result.is_ok());
     assert_eq!(state.screen, Screen::KeyManagement);
-    assert_status_contains(&state, "Restore failed");
+    assert_status_contains(&state, "복원 실패");
     assert_eq!(
         std::fs::read(identity_key_path(&temp_dir)).expect("read preserved key"),
         existing_key_bytes
@@ -381,7 +381,7 @@ fn backup_write_failure_sets_status_and_does_not_exit() {
 
     assert!(result.is_ok());
     assert_eq!(state.screen, Screen::KeyManagement);
-    assert_status_contains(&state, "Backup failed");
+    assert_status_contains(&state, "백업 실패");
     assert!(temp_dir.path().join("identity.key").exists());
 }
 

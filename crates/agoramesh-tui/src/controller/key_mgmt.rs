@@ -6,17 +6,17 @@ use crate::error::Error;
 use crate::key_ux;
 use crate::models::KeyStatus;
 
-const KEY_OVERWRITE_DISABLED: &str = "Key overwrite disabled; use backup/restore instead";
+const KEY_OVERWRITE_DISABLED: &str = "키 덮어쓰기는 비활성화되어 있습니다. 백업/복원을 사용하세요";
 
 /// Generates a development plaintext key.
 pub(super) fn handle_generate_dev_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
     match key_ux::generate_dev_key(backend) {
         Ok(key_status) => {
             state.key_status = key_status;
-            state.key_input.status = Some("Development key generated".to_owned());
-            state.status_message = Some("Development key generated".to_owned());
+            state.key_input.status = Some("개발용 키가 생성되었습니다".to_owned());
+            state.status_message = Some("개발용 키가 생성되었습니다".to_owned());
         }
-        Err(error) => set_key_error_status(state, error.to_string()),
+        Err(error) => set_key_error_status(state, key_error_message(&error)),
     }
     None
 }
@@ -27,7 +27,7 @@ pub(super) fn handle_generate_encrypted_key(
     state: &mut AppState,
 ) -> Option<Action> {
     if state.key_input.passphrase.is_empty() {
-        let message = "type a passphrase before generating an encrypted key".to_owned();
+        let message = "암호화 키를 생성하기 전에 암호구문을 입력하세요".to_owned();
         state.key_input.status = Some(message.clone());
         state.status_message = Some(message);
         return None;
@@ -36,10 +36,10 @@ pub(super) fn handle_generate_encrypted_key(
         Ok(status) => {
             state.key_status = status;
             state.key_input.passphrase.clear();
-            state.key_input.status = Some("Encrypted key generated and unlocked".to_owned());
-            state.status_message = Some("Encrypted key generated and unlocked".to_owned());
+            state.key_input.status = Some("암호화 키가 생성되고 잠금 해제되었습니다".to_owned());
+            state.status_message = Some("암호화 키가 생성되고 잠금 해제되었습니다".to_owned());
         }
-        Err(error) => set_key_error_status(state, error.to_string()),
+        Err(error) => set_key_error_status(state, key_error_message(&error)),
     }
     None
 }
@@ -47,7 +47,7 @@ pub(super) fn handle_generate_encrypted_key(
 /// Unlocks an existing encrypted keyring for this TUI session.
 pub(super) fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
     if state.key_input.passphrase.is_empty() {
-        let message = "type a passphrase before unlocking the key".to_owned();
+        let message = "키를 잠금 해제하기 전에 암호구문을 입력하세요".to_owned();
         state.key_input.status = Some(message.clone());
         state.status_message = Some(message);
         return None;
@@ -56,8 +56,8 @@ pub(super) fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Opti
         Ok(status) => {
             state.key_status = status;
             state.key_input.passphrase.clear();
-            state.key_input.status = Some("Encrypted key unlocked".to_owned());
-            state.status_message = Some("Encrypted key unlocked".to_owned());
+            state.key_input.status = Some("암호화 키가 잠금 해제되었습니다".to_owned());
+            state.status_message = Some("암호화 키가 잠금 해제되었습니다".to_owned());
         }
         Err(error) => {
             let message = error.to_string();
@@ -72,7 +72,7 @@ pub(super) fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Opti
 pub(super) fn handle_backup_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
     match backend.backup_key() {
         Ok(path) => {
-            let message = format!("Key backup written to {}", path.display());
+            let message = format!("키 백업을 {}에 썼습니다", path.display());
             state.key_input.status = Some(message.clone());
             state.status_message = Some(message);
         }
@@ -88,15 +88,13 @@ pub(super) fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Opt
             Ok(status) => {
                 let message = match &status {
                     KeyStatus::Present { public_key_hex } => {
-                        format!("Key restored from backup: {public_key_hex}")
+                        format!("백업에서 키를 복원했습니다: {public_key_hex}")
                     }
                     KeyStatus::Locked { public_key_hex } => {
-                        let public_key = public_key_hex
-                            .as_deref()
-                            .unwrap_or("encrypted key restored");
-                        format!("Key restored from backup: {public_key}")
+                        let public_key = public_key_hex.as_deref().unwrap_or("암호화 키 복원됨");
+                        format!("백업에서 키를 복원했습니다: {public_key}")
                     }
-                    KeyStatus::Missing => "Key restored from backup".to_owned(),
+                    KeyStatus::Missing => "백업에서 키를 복원했습니다".to_owned(),
                 };
                 state.key_status = status;
                 state.key_input.status = Some(message.clone());
@@ -105,7 +103,7 @@ pub(super) fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Opt
             Err(error) => set_key_error_status(
                 state,
                 format!(
-                    "Restore failed: key status could not be refreshed ({error}). Existing key was not changed."
+                    "복원 실패: 키 상태를 새로고침할 수 없습니다({error}). 기존 키는 변경되지 않았습니다."
                 ),
             ),
         },
@@ -120,47 +118,64 @@ pub(super) fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Opt
 }
 
 fn set_key_error_status(state: &mut AppState, message: String) {
-    let message = if message == format!("message error: {KEY_OVERWRITE_DISABLED}") {
-        KEY_OVERWRITE_DISABLED.to_owned()
-    } else {
-        message
-    };
     state.key_input.status = Some(message.clone());
     state.status_message = Some(message);
+}
+
+fn key_error_message(error: &Error) -> String {
+    match error {
+        Error::Message(message) if message == KEY_OVERWRITE_DISABLED => {
+            KEY_OVERWRITE_DISABLED.to_owned()
+        }
+        _ => error.to_string(),
+    }
 }
 
 fn backup_error_message(error: &Error) -> String {
     match error {
         Error::StateIo(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            "Backup failed: no identity key exists yet. Generate or restore a key first.".to_owned()
+            "백업 실패: 아직 신원 키가 없습니다. 먼저 키를 생성하거나 복원하세요.".to_owned()
         }
         Error::StateIo(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
-            "Backup failed: backup path is not writable. No key was changed.".to_owned()
+            "백업 실패: 백업 경로에 쓸 수 없습니다. 키는 변경되지 않았습니다.".to_owned()
         }
         Error::StateIo(_) => {
-            "Backup failed: backup file could not be written. No key was changed.".to_owned()
+            "백업 실패: 백업 파일을 쓸 수 없습니다. 키는 변경되지 않았습니다.".to_owned()
         }
-        _ => format!("Backup failed: {error}. No key was changed."),
+        _ => format!("백업 실패: {error}. 키는 변경되지 않았습니다."),
     }
 }
 
 fn restore_error_message(error: &Error) -> String {
     match error {
         Error::StateIo(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            "Restore failed: backup file is missing or unreadable. Existing key was not changed."
+            "복원 실패: 백업 파일이 없거나 읽을 수 없습니다. 기존 키는 변경되지 않았습니다."
                 .to_owned()
         }
         Error::StateIo(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
-            "Restore failed: key path is not writable. Existing key was not changed.".to_owned()
+            "복원 실패: 키 경로에 쓸 수 없습니다. 기존 키는 변경되지 않았습니다.".to_owned()
         }
         Error::StateIo(_) => {
-            "Restore failed: backup file could not be read or written. Existing key was not changed."
+            "복원 실패: 백업 파일을 읽거나 쓸 수 없습니다. 기존 키는 변경되지 않았습니다."
                 .to_owned()
         }
         Error::StateJson(_) | Error::Key(_) => {
-            "Restore failed: backup file is not a valid identity key. Existing key was not changed."
+            "복원 실패: 백업 파일이 올바른 신원 키가 아닙니다. 기존 키는 변경되지 않았습니다."
                 .to_owned()
         }
-        _ => format!("Restore failed: {error}. Existing key was not changed."),
+        _ => format!("복원 실패: {error}. 기존 키는 변경되지 않았습니다."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_overwrite_disabled_status_uses_typed_error_message() {
+        let message = key_error_message(&Error::Message(KEY_OVERWRITE_DISABLED.to_owned()));
+
+        assert_eq!(message, KEY_OVERWRITE_DISABLED);
+        assert!(!message.starts_with("메시지 오류:"));
     }
 }

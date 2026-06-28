@@ -140,7 +140,8 @@ fn compose_preview_and_submit_integration() {
         .iter()
         .map(ratatui::buffer::Cell::symbol)
         .collect::<String>();
-    assert!(text.contains("Preview"));
+    let compact = text.replace(' ', "");
+    assert!(compact.contains("미리보기"));
 
     let post = submit_compose(&backend, &state, &compose).expect("submit");
     assert_eq!(post.text, "Submitted via integration");

@@ -107,14 +107,14 @@ impl Backend {
         let store = self.store()?;
         let clock = SystemClock;
         let post_message_id = agoramesh_core::MessageId::from_hex(post_id)
-            .map_err(|error| Error::Message(format!("invalid post id: {error}")))?;
+            .map_err(|error| Error::Message(format!("게시글 ID가 올바르지 않습니다: {error}")))?;
         let post_message = store
             .get(post_message_id, &clock)?
-            .ok_or_else(|| Error::Message("post not found".to_owned()))?;
+            .ok_or_else(|| Error::Message("게시글을 찾을 수 없습니다".to_owned()))?;
         let Some(post_body) =
             projection::maybe_decode_body::<PostObject>(&post_message).map_err(Error::from)?
         else {
-            return Err(Error::Message("thread root is not a post".to_owned()));
+            return Err(Error::Message("스레드 루트가 게시글이 아닙니다".to_owned()));
         };
         let context = AcceptanceContext::phase1(&clock);
         acceptance::validate_phase1_for_acceptance(&post_message, &context).map_err(Error::from)?;
@@ -140,8 +140,10 @@ impl Backend {
             else {
                 continue;
             };
-            let parent_id = agoramesh_core::MessageId::from_hex(&body.parent_id)
-                .map_err(|error| Error::Message(format!("invalid comment parent_id: {error}")))?;
+            let parent_id =
+                agoramesh_core::MessageId::from_hex(&body.parent_id).map_err(|error| {
+                    Error::Message(format!("댓글 parent_id가 올바르지 않습니다: {error}"))
+                })?;
             acceptance::validate_phase1_for_acceptance(&message, &context).map_err(Error::from)?;
             let parent_kind = body.parent_kind;
             let loaded = LoadedComment {

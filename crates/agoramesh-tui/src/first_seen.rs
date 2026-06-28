@@ -59,14 +59,14 @@ fn warning_lines(warnings: &[FirstSeenWarning]) -> Vec<Line<'_>> {
                 Line::from(vec![
                     Span::styled("! ", Style::default().fg(Color::Yellow)),
                     Span::raw(format!(
-                        "First time seeing category '{name}' ({category_id}). Press 'a' to acknowledge.",
+                        "처음 보는 카테고리 '{name}' ({category_id})입니다. 확인하려면 'a'를 누르세요.",
                     )),
                 ])
             }
             FirstSeenWarning::Peer { address } => Line::from(vec![
                 Span::styled("! ", Style::default().fg(Color::Yellow)),
                 Span::raw(format!(
-                    "First time seeing peer {address}. Press 'a' to acknowledge."
+                    "처음 보는 피어 {address}입니다. 확인하려면 'a'를 누르세요."
                 )),
             ]),
         })
@@ -137,7 +137,8 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("First time seeing peer"));
-        assert!(text.contains("Press 'a'"));
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("처음보는피어"));
+        assert!(compact.contains("'a'를누르세요"));
     }
 }

@@ -59,8 +59,14 @@ fn handle_action_submits_compose_and_returns_to_feed() {
     assert!(result.expect("compose submit succeeds").is_none());
     assert_eq!(state.screen, Screen::Feed);
     assert_eq!(state.compose.text, "");
-    assert_eq!(state.compose.status.as_deref(), Some("Post submitted"));
-    assert_eq!(state.status_message.as_deref(), Some("Post submitted"));
+    assert_eq!(
+        state.compose.status.as_deref(),
+        Some("게시글을 제출했습니다")
+    );
+    assert_eq!(
+        state.status_message.as_deref(),
+        Some("게시글을 제출했습니다")
+    );
     assert_eq!(
         state.posts.get(&category.category_id).map(Vec::len),
         Some(1)
@@ -78,7 +84,7 @@ fn handle_action_generates_dev_key_and_updates_status() {
     assert!(matches!(state.key_status, KeyStatus::Present { .. }));
     assert_eq!(
         state.status_message.as_deref(),
-        Some("Development key generated")
+        Some("개발용 키가 생성되었습니다")
     );
 }
 
@@ -146,7 +152,7 @@ fn handle_action_select_on_feed_without_posts_sets_status_message() {
     assert_eq!(state.screen, Screen::Feed);
     assert_eq!(
         state.status_message.as_deref(),
-        Some("No post selected in the current feed category")
+        Some("현재 피드 카테고리에서 선택한 게시글이 없습니다")
     );
 }
 

@@ -16,8 +16,8 @@ pub fn render_thread(state: &AppState, area: Rect, buf: &mut Buffer) {
         render_post(&thread.post, layout.post, buf);
         render_comments(&thread.comments, state.selected_index, layout.comments, buf);
     } else {
-        let empty = Paragraph::new("No post selected. Return to feed and press Enter.")
-            .block(Block::default().borders(Borders::ALL).title("Thread"));
+        let empty = Paragraph::new("선택한 게시글이 없습니다. 피드로 돌아가 Enter를 누르세요.")
+            .block(Block::default().borders(Borders::ALL).title("스레드"));
         empty.render(area, buf);
     }
 }
@@ -46,7 +46,7 @@ fn render_post(post: &FeedPost, area: Rect, buf: &mut Buffer) {
         text = post.text
     );
     Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Post"))
+        .block(Block::default().borders(Borders::ALL).title("게시글"))
         .render(area, buf);
 }
 
@@ -58,7 +58,7 @@ fn render_comments(
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     flatten_comments(comments, 0, selected_index, &mut 0, &mut lines);
-    let block = Block::default().borders(Borders::ALL).title("Comments");
+    let block = Block::default().borders(Borders::ALL).title("댓글");
     Paragraph::new(lines).block(block).render(area, buf);
 }
 
@@ -170,5 +170,20 @@ mod tests {
                 .and_then(|thread| thread.comments.first())
                 .is_some_and(|comment| comment.collapsed)
         );
+    }
+
+    #[test]
+    fn thread_empty_state_is_korean() {
+        let state = AppState::new();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+        render_thread(&state, buffer.area, &mut buffer);
+        let text = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("선택한게시글이없습니다"));
+        assert!(compact.contains("스레드"));
     }
 }

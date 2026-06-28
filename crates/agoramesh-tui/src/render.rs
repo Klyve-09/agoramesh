@@ -63,7 +63,7 @@ fn render_subscriptions(state: &AppState, area: Rect, buf: &mut Buffer) {
         .collect();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Subscriptions — Space/Enter toggles, all known categories shown");
+        .title("구독 — Space/Enter 토글, 알려진 모든 카테고리 표시");
     Paragraph::new(lines).block(block).render(area, buf);
 }
 
@@ -100,9 +100,20 @@ fn shell_layout(state: &AppState, area: Rect) -> ShellLayout {
 }
 
 fn render_header(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let title = format!("AgoraMesh — {:?}", state.screen);
+    let title = format!("AgoraMesh — {}", screen_label(state.screen));
     let header = Paragraph::new(title).style(Style::default().bold().fg(Color::Cyan));
     header.render(area, buf);
+}
+
+const fn screen_label(screen: Screen) -> &'static str {
+    match screen {
+        Screen::Feed => "피드",
+        Screen::Compose => "글쓰기",
+        Screen::Thread => "스레드",
+        Screen::Subscriptions => "구독",
+        Screen::SyncStatus => "동기화 상태",
+        Screen::KeyManagement => "키 관리",
+    }
 }
 
 fn render_body(state: &AppState, area: Rect, buf: &mut Buffer) {
@@ -110,8 +121,7 @@ fn render_body(state: &AppState, area: Rect, buf: &mut Buffer) {
 }
 
 fn render_footer(state: &AppState, area: Rect, buf: &mut Buffer) {
-    let help =
-        "1:Feed 2:Subs 3:Sync 4:Key n:New Tab:Focus a:Ack Enter:Open/Submit Esc:Back Ctrl+q:Quit";
+    let help = "1피드 2구독 3동기화 4키 n글 Tab초점 a확인 Enter열기/제출 Esc뒤로 Ctrl+q종료";
     let footer_text = state
         .status_message
         .as_ref()
@@ -123,7 +133,7 @@ fn render_footer(state: &AppState, area: Rect, buf: &mut Buffer) {
 /// Renders sync totals in a compact form for status panels.
 pub fn render_sync_totals(totals: &SyncTotals, area: Rect, buf: &mut Buffer) {
     let text = format!(
-        "pulled {} | pushed {} | rejected {}",
+        "가져옴 {} | 보냄 {} | 거부됨 {}",
         totals.pulled, totals.pushed, totals.rejected
     );
     Paragraph::new(text).render(area, buf);
@@ -149,9 +159,10 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
+        let compact = text.replace(' ', "");
         assert!(text.contains("AgoraMesh"));
-        assert!(text.contains("Feed"));
-        assert!(text.contains("Tab:Focus"));
+        assert!(compact.contains("피드"));
+        assert!(compact.contains("Tab초점"));
     }
 
     #[test]
@@ -171,6 +182,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("First time seeing peer"));
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("처음보는피어"));
     }
 }

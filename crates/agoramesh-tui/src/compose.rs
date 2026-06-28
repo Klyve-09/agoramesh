@@ -66,44 +66,44 @@ fn render_category_selector(
     buf: &mut Buffer,
 ) {
     let label = state.categories.get(compose.category_index).map_or_else(
-        || "No categories available".to_owned(),
+        || "사용 가능한 카테고리가 없습니다".to_owned(),
         |category| {
             format!(
-                "Category: {} ({})",
+                "카테고리: {} ({})",
                 category.display_name, category.category_id
             )
         },
     );
     Paragraph::new(label)
-        .block(Block::default().borders(Borders::ALL).title("Category"))
+        .block(Block::default().borders(Borders::ALL).title("카테고리"))
         .render(area, buf);
 }
 
 fn render_editor(compose: &ComposeState, area: Rect, buf: &mut Buffer) {
     let display = if compose.text.is_empty() {
-        Text::from("Type your post here... (no content yet)")
+        Text::from("여기에 게시글을 입력하세요... (아직 내용 없음)")
             .style(Style::default().fg(Color::DarkGray))
     } else {
         Text::from(compose.text.as_str())
     };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Editor — Enter inserts newline, Tab previews");
+        .title("편집기 — Enter 줄바꿈, Tab 미리보기");
     Paragraph::new(display).block(block).render(area, buf);
 }
 
 fn render_preview(compose: &ComposeState, area: Rect, buf: &mut Buffer) {
     let preview_text = format!(
-        "Category index: {}\n---\n{}",
+        "카테고리 인덱스: {}\n---\n{}",
         compose.category_index, compose.text
     );
     Paragraph::new(preview_text)
-        .block(Block::default().borders(Borders::ALL).title("Preview"))
+        .block(Block::default().borders(Borders::ALL).title("미리보기"))
         .render(area, buf);
 }
 
 fn render_compose_help(area: Rect, buf: &mut Buffer) {
-    let help = "Editor: Enter newline | Tab preview | Preview: Enter submit | Esc back";
+    let help = "편집기: Enter 줄바꿈 | Tab 미리보기 | 미리보기: Enter 제출 | Esc 뒤로";
     Paragraph::new(help)
         .style(Style::default().fg(Color::DarkGray))
         .render(area, buf);
@@ -123,12 +123,12 @@ pub fn submit_compose(
     let category = state
         .categories
         .get(compose.category_index)
-        .ok_or_else(|| Error::Message("no category selected".to_owned()))?;
+        .ok_or_else(|| Error::Message("선택한 카테고리가 없습니다".to_owned()))?;
     if compose.text.trim().is_empty() {
-        return Err(Error::Message("post text is empty".to_owned()));
+        return Err(Error::Message("게시글 내용이 비어 있습니다".to_owned()));
     }
     let created_at = truncate_to_seconds(Utc::now())
-        .ok_or_else(|| Error::Message("failed to truncate timestamp".to_owned()))?;
+        .ok_or_else(|| Error::Message("타임스탬프 초 단위 변환에 실패했습니다".to_owned()))?;
     backend.create_post(&category.category_id, &compose.text, created_at)
 }
 
@@ -179,7 +179,8 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(text.contains("Preview"));
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("미리보기"));
         assert!(text.contains("Preview only"));
     }
 

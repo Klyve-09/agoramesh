@@ -45,7 +45,7 @@ pub(super) fn key_status(backend: &Backend, generate_if_missing: bool) -> Result
 pub(super) fn generate_dev_key(backend: &Backend) -> Result<KeyStatus, Error> {
     if !backend.plaintext {
         return Err(Error::Message(
-            "plaintext key generation is only available in dev mode".to_owned(),
+            "개발 모드에서만 평문 키를 생성할 수 있습니다".to_owned(),
         ));
     }
     reject_key_overwrite(backend)?;
@@ -107,7 +107,7 @@ pub(super) fn restore_key_from_backup(backend: &Backend) -> Result<(), Error> {
 pub(super) fn reject_key_overwrite(backend: &Backend) -> Result<(), Error> {
     if backend.config.key_path().exists() {
         return Err(Error::Message(
-            "Key overwrite disabled; use backup/restore instead".to_owned(),
+            "키 덮어쓰기는 비활성화되어 있습니다. 백업/복원을 사용하세요".to_owned(),
         ));
     }
     Ok(())
@@ -118,7 +118,7 @@ pub(super) fn load_keypair(backend: &Backend) -> Result<Keypair, Error> {
         return Ok(Keyring::new(&backend.config.key_path()).dev_plaintext_load()?);
     }
     let passphrase = session_passphrase(backend)?.ok_or_else(|| {
-        Error::Message("encrypted key is locked; enter passphrase in Key Management".to_owned())
+        Error::Message("암호화 키가 잠겨 있습니다. 키 관리에서 암호구문을 입력하세요".to_owned())
     })?;
     Ok(Keyring::new(&backend.config.key_path()).load(&passphrase)?)
 }
@@ -127,7 +127,7 @@ pub(super) fn session_passphrase(backend: &Backend) -> Result<Option<String>, Er
     backend
         .passphrase
         .lock()
-        .map_err(|_error| Error::Message("key session lock poisoned".to_owned()))
+        .map_err(|_error| Error::Message("키 세션 잠금이 손상되었습니다".to_owned()))
         .map(|passphrase| passphrase.clone())
 }
 
@@ -135,7 +135,7 @@ pub(super) fn set_session_passphrase(backend: &Backend, passphrase: &str) -> Res
     let mut session = backend
         .passphrase
         .lock()
-        .map_err(|_error| Error::Message("key session lock poisoned".to_owned()))?;
+        .map_err(|_error| Error::Message("키 세션 잠금이 손상되었습니다".to_owned()))?;
     *session = Some(passphrase.to_owned());
     drop(session);
     Ok(())
@@ -158,7 +158,7 @@ fn validate_restored_key_bytes(backend: &Backend, bytes: &[u8]) -> Result<(), Er
 
     if backend.config.key_path().exists() {
         return Err(Error::Message(
-            "encrypted key is locked; unlock before restoring over an existing key".to_owned(),
+            "암호화 키가 잠겨 있습니다. 기존 키 위에 복원하기 전에 잠금 해제하세요".to_owned(),
         ));
     }
 
@@ -179,4 +179,26 @@ fn validate_restored_key_file(backend: &Backend, path: &std::path::Path) -> Resu
 
     keyring::validate_encrypted_key_file_structure(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locked_keypair_error_uses_passphrase_term() {
+        let temp_dir = tempfile::tempdir().expect("create tempdir");
+        let backend =
+            Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("open backend");
+        generate_encrypted_key(&backend, "correct horse").expect("generate encrypted key");
+        let reopened =
+            Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen backend");
+
+        let error = load_keypair(&reopened).expect_err("locked key requires passphrase");
+
+        assert_eq!(
+            error.to_string(),
+            "메시지 오류: 암호화 키가 잠겨 있습니다. 키 관리에서 암호구문을 입력하세요"
+        );
+    }
 }

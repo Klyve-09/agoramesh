@@ -13,7 +13,7 @@ pub(super) fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> 
     }
 
     if state.compose.text.trim().is_empty() {
-        let message = "post text is empty".to_owned();
+        let message = "게시글 내용이 비어 있습니다".to_owned();
         state.compose.status = Some(message.clone());
         state.status_message = Some(message);
         return None;
@@ -25,7 +25,7 @@ pub(super) fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> 
         .get(compose.category_index)
         .map(|category| category.category_id.clone())
     else {
-        state.status_message = Some("no category selected".to_owned());
+        state.status_message = Some("선택한 카테고리가 없습니다".to_owned());
         return None;
     };
     match submit_compose(backend, state, &compose) {
@@ -36,8 +36,8 @@ pub(super) fn handle_compose_submit(backend: &Backend, state: &mut AppState) -> 
             let selected_post_index = posts.len().saturating_sub(1);
             state.compose.text.clear();
             state.compose.preview = false;
-            state.compose.status = Some("Post submitted".to_owned());
-            state.status_message = Some("Post submitted".to_owned());
+            state.compose.status = Some("게시글을 제출했습니다".to_owned());
+            state.status_message = Some("게시글을 제출했습니다".to_owned());
             state.screen = Screen::Feed;
             state.screen_stack.clear();
             if let Some(index) = selected_category_index {
