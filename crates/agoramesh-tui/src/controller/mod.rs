@@ -69,7 +69,7 @@ fn acknowledge_current_warning(backend: &Backend, state: &mut AppState) -> Resul
     next.warnings = compute_warnings(&next.categories, &next.peers, &next.acknowledged);
     backend.save_acknowledged(&next.acknowledged)?;
     *state = next;
-    state.status_message = Some("Warning acknowledged".to_owned());
+    state.status_message = Some("경고를 확인했습니다".to_owned());
     Ok(None)
 }
 
@@ -90,6 +90,6 @@ fn handle_toggle_subscription(backend: &Backend, state: &mut AppState) -> Result
     backend.save_subscriptions(&next.subscriptions)?;
     *state = next;
     state.clamp_feed_post_index();
-    state.status_message = Some("Subscriptions updated".to_owned());
+    state.status_message = Some("구독이 업데이트되었습니다".to_owned());
     Ok(None)
 }
