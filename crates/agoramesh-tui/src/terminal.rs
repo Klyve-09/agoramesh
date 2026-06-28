@@ -177,7 +177,7 @@ fn initialize_state(backend: &Backend) -> color_eyre::Result<AppState> {
     state.posts = load_posts(backend, &state.categories, &state)?;
     if matches!(state.key_status, KeyStatus::Missing) {
         state.status_message =
-            Some("No identity key found. Open Key Management (4) to generate one.".to_owned());
+            Some("신원 키를 찾을 수 없습니다. 키 관리(4)를 열어 생성하세요.".to_owned());
     }
     Ok(state)
 }

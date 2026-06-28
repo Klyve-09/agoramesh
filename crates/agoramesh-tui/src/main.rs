@@ -9,13 +9,13 @@ use agoramesh_tui::terminal::run;
 
 #[derive(Debug, Parser)]
 #[command(name = "agoramesh-tui")]
-#[command(about = "Minimal terminal UI for AgoraMesh")]
+#[command(about = "AgoraMesh 최소 터미널 UI")]
 struct Args {
-    /// Data directory for keys, store, peers, and TUI state.
+    /// 키, 저장소, 피어, TUI 상태를 저장할 데이터 디렉터리.
     #[arg(long, env = "AGORAMESH_DATA_DIR")]
     data_dir: Option<PathBuf>,
 
-    /// Run in plaintext dev key mode (do not use for real identities).
+    /// 개발용 평문 키 모드로 실행합니다. 실제 신원에는 사용하지 마세요.
     #[arg(long, env = "AGORAMESH_DEV_INSECURE_PLAINTEXT_KEY")]
     dev_insecure_plaintext_key: bool,
 }
