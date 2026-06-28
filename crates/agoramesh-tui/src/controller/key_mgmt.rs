@@ -16,7 +16,7 @@ pub(super) fn handle_generate_dev_key(backend: &Backend, state: &mut AppState) -
             state.key_input.status = Some("개발용 키가 생성되었습니다".to_owned());
             state.status_message = Some("개발용 키가 생성되었습니다".to_owned());
         }
-        Err(error) => set_key_error_status(state, error.to_string()),
+        Err(error) => set_key_error_status(state, key_error_message(&error)),
     }
     None
 }
@@ -27,7 +27,7 @@ pub(super) fn handle_generate_encrypted_key(
     state: &mut AppState,
 ) -> Option<Action> {
     if state.key_input.passphrase.is_empty() {
-        let message = "암호화 키를 생성하기 전에 암호문을 입력하세요".to_owned();
+        let message = "암호화 키를 생성하기 전에 암호구문을 입력하세요".to_owned();
         state.key_input.status = Some(message.clone());
         state.status_message = Some(message);
         return None;
@@ -39,7 +39,7 @@ pub(super) fn handle_generate_encrypted_key(
             state.key_input.status = Some("암호화 키가 생성되고 잠금 해제되었습니다".to_owned());
             state.status_message = Some("암호화 키가 생성되고 잠금 해제되었습니다".to_owned());
         }
-        Err(error) => set_key_error_status(state, error.to_string()),
+        Err(error) => set_key_error_status(state, key_error_message(&error)),
     }
     None
 }
@@ -47,7 +47,7 @@ pub(super) fn handle_generate_encrypted_key(
 /// Unlocks an existing encrypted keyring for this TUI session.
 pub(super) fn handle_unlock_key(backend: &Backend, state: &mut AppState) -> Option<Action> {
     if state.key_input.passphrase.is_empty() {
-        let message = "키를 잠금 해제하기 전에 암호문을 입력하세요".to_owned();
+        let message = "키를 잠금 해제하기 전에 암호구문을 입력하세요".to_owned();
         state.key_input.status = Some(message.clone());
         state.status_message = Some(message);
         return None;
@@ -118,13 +118,17 @@ pub(super) fn handle_restore_key(backend: &Backend, state: &mut AppState) -> Opt
 }
 
 fn set_key_error_status(state: &mut AppState, message: String) {
-    let message = if message == format!("메시지 오류: {KEY_OVERWRITE_DISABLED}") {
-        KEY_OVERWRITE_DISABLED.to_owned()
-    } else {
-        message
-    };
     state.key_input.status = Some(message.clone());
     state.status_message = Some(message);
+}
+
+fn key_error_message(error: &Error) -> String {
+    match error {
+        Error::Message(message) if message == KEY_OVERWRITE_DISABLED => {
+            KEY_OVERWRITE_DISABLED.to_owned()
+        }
+        _ => error.to_string(),
+    }
 }
 
 fn backup_error_message(error: &Error) -> String {
@@ -160,5 +164,18 @@ fn restore_error_message(error: &Error) -> String {
                 .to_owned()
         }
         _ => format!("복원 실패: {error}. 기존 키는 변경되지 않았습니다."),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_overwrite_disabled_status_uses_typed_error_message() {
+        let message = key_error_message(&Error::Message(KEY_OVERWRITE_DISABLED.to_owned()));
+
+        assert_eq!(message, KEY_OVERWRITE_DISABLED);
+        assert!(!message.starts_with("메시지 오류:"));
     }
 }

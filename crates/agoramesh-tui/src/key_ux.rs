@@ -17,7 +17,7 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
             let lines: Vec<Line<'_>> = vec![
                 Line::from("신원 키를 찾을 수 없습니다."),
                 Line::from(""),
-                Line::from("암호문을 입력한 뒤 Ctrl+g로 암호화 키를 생성하세요."),
+                Line::from("암호구문을 입력한 뒤 Ctrl+g로 암호화 키를 생성하세요."),
                 Line::from("Ctrl+d는 --dev-insecure-plaintext-key로 시작했을 때만 사용하세요."),
                 Line::from(""),
                 Line::from(masked_passphrase_line(state)),
@@ -30,7 +30,7 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
             let lines: Vec<Line<'_>> = vec![
                 Line::from("암호화된 신원 키가 잠겨 있습니다."),
                 Line::from(format!("공개 키: {public_key}")),
-                Line::from("암호문을 입력한 뒤 Enter로 잠금 해제하세요."),
+                Line::from("암호구문을 입력한 뒤 Enter로 잠금 해제하세요."),
                 Line::from(""),
                 Line::from(masked_passphrase_line(state)),
                 Line::from(action_status_line(state)),
@@ -43,7 +43,7 @@ pub fn render_key_management(state: &AppState, area: Rect, buf: &mut Buffer) {
                 Line::from(""),
                 Line::from(format!("공개 키: {public_key_hex}")),
                 Line::from(""),
-                Line::from("백업 안내: 키 파일과 암호문을 안전하게 보관하세요."),
+                Line::from("백업 안내: 키 파일과 암호구문을 안전하게 보관하세요."),
                 Line::from("Ctrl+b로 identity.key.backup을 쓰고, Ctrl+r로 복원합니다."),
                 Line::from("비밀 seed는 여기에서 절대 표시하지 않습니다."),
                 Line::from(action_status_line(state)),
@@ -70,7 +70,7 @@ pub fn generate_dev_key(backend: &Backend) -> Result<KeyStatus, Error> {
 
 fn masked_passphrase_line(state: &AppState) -> String {
     format!(
-        "암호문: {}",
+        "암호구문: {}",
         "•".repeat(state.key_input.passphrase.chars().count())
     )
 }
@@ -115,5 +115,42 @@ mod tests {
         assert!(compact.contains("비밀seed는여기에서절대표시하지않습니다"));
         assert!(compact.contains("Ctrl+d"));
         assert!(compact.contains("개발용평문"));
+    }
+
+    #[test]
+    fn key_panel_uses_passphrase_term_for_visible_prompts() {
+        let mut state = crate::app::AppState::new();
+        state.key_input.passphrase = "secret".to_owned();
+
+        let mut text = render_key_panel_text(&state);
+        let mut compact = text.replace(' ', "");
+        assert!(compact.contains("암호구문을입력한뒤Ctrl+g로암호화키를생성하세요."));
+        assert!(compact.contains("암호구문:"));
+
+        state.key_status = KeyStatus::Locked {
+            public_key_hex: Some("abc123".to_owned()),
+        };
+        text = render_key_panel_text(&state);
+        compact = text.replace(' ', "");
+        assert!(compact.contains("암호구문을입력한뒤Enter로잠금해제하세요."));
+        assert!(compact.contains("암호구문:"));
+
+        state.key_status = KeyStatus::Present {
+            public_key_hex: "abc123".to_owned(),
+        };
+        text = render_key_panel_text(&state);
+        compact = text.replace(' ', "");
+        assert!(compact.contains("백업안내:키파일과암호구문을안전하게보관하세요."));
+        assert!(!text.contains("암호문"));
+    }
+
+    fn render_key_panel_text(state: &crate::app::AppState) -> String {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+        render_key_management(state, buffer.area, &mut buffer);
+        buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 }

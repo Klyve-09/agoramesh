@@ -118,7 +118,7 @@ pub(super) fn load_keypair(backend: &Backend) -> Result<Keypair, Error> {
         return Ok(Keyring::new(&backend.config.key_path()).dev_plaintext_load()?);
     }
     let passphrase = session_passphrase(backend)?.ok_or_else(|| {
-        Error::Message("암호화 키가 잠겨 있습니다. 키 관리에서 암호문을 입력하세요".to_owned())
+        Error::Message("암호화 키가 잠겨 있습니다. 키 관리에서 암호구문을 입력하세요".to_owned())
     })?;
     Ok(Keyring::new(&backend.config.key_path()).load(&passphrase)?)
 }
@@ -179,4 +179,26 @@ fn validate_restored_key_file(backend: &Backend, path: &std::path::Path) -> Resu
 
     keyring::validate_encrypted_key_file_structure(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locked_keypair_error_uses_passphrase_term() {
+        let temp_dir = tempfile::tempdir().expect("create tempdir");
+        let backend =
+            Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("open backend");
+        generate_encrypted_key(&backend, "correct horse").expect("generate encrypted key");
+        let reopened =
+            Backend::open(Some(temp_dir.path().to_path_buf()), false).expect("reopen backend");
+
+        let error = load_keypair(&reopened).expect_err("locked key requires passphrase");
+
+        assert_eq!(
+            error.to_string(),
+            "메시지 오류: 암호화 키가 잠겨 있습니다. 키 관리에서 암호구문을 입력하세요"
+        );
+    }
 }
